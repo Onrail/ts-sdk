@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@onrail-xyz/fork-svm",
+  "version": "1.0.0",
+  "author": "nonergodic",
+  "license": "Apache-2.0",
+  "description": "Solana fork testing utility based on LiteSVM",
+  "keywords": [
+    "solana",
+    "svm",
+    "litesvm",
+    "fork",
+    "test"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Onrail/ts-sdk.git",
+    "directory": "packages/fork-svm"
+  },
+  "bugs": {
+    "url": "https://github.com/Onrail/ts-sdk/issues"
+  },
+  "homepage": "https://github.com/Onrail/ts-sdk/tree/main/packages/fork-svm#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "types": "./dist/index.d.ts",
+    "import": "./dist/index.js",
+    "default": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "prepublishOnly": "pnpm test && pnpm build",
+    "build": "pnpm clean && tsc && mkdir -p dist/liteSvm && cp src/liteSvm/internal.js src/liteSvm/internal.d.ts src/liteSvm/package.json dist/liteSvm/",
+    "test": "tsc -p tsconfig.test.json && tsx --test tests/**/*.test.ts",
+    "clean": "rm -rf ./dist"
+  },
+  "peerDependencies": {
+    "@onrail-xyz/utils": "^1.0.0",
+    "@onrail-xyz/binary-layout": "^1.0.0",
+    "@onrail-xyz/amount": "^1.0.0",
+    "@onrail-xyz/common": "^1.0.0",
+    "@onrail-xyz/svm": "^1.0.0",
+    "@solana/kit": "^7",
+    "@solana/rpc-spec": "^7"
+  },
+  "devDependencies": {
+    "@onrail-xyz/utils": "workspace:*",
+    "@onrail-xyz/binary-layout": "workspace:*",
+    "@onrail-xyz/amount": "workspace:*",
+    "@onrail-xyz/common": "workspace:*",
+    "@onrail-xyz/svm": "workspace:*",
+    "@solana/kit": "catalog:",
+    "@solana/rpc-spec": "catalog:"
+  },
+  "optionalDependencies": {
+    "litesvm-darwin-arm64": "1.4.1",
+    "litesvm-darwin-x64": "1.4.1",
+    "litesvm-linux-arm64-gnu": "1.4.1",
+    "litesvm-linux-arm64-musl": "1.4.1",
+    "litesvm-linux-x64-gnu": "1.4.1",
+    "litesvm-linux-x64-musl": "1.4.1"
+  },
+  "engines": {
+    "node": ">=25.0.0"
+  }
+}

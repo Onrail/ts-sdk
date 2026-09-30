@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  //the pins for a consumer without exactOptionalPropertyTypes, which the other suites cannot see
+  "extends": "../../tsconfig.test.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["./*.ts"],
+  "exclude": []
+}

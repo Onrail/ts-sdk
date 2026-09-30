@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@onrail-xyz/utils",
+  "version": "1.0.0",
+  "author": "nonergodic",
+  "license": "Apache-2.0",
+  "description": "Zero-dependency foundation of the SDK: type-safe utilities for readonly and const data structures, lookup tables built from a const spec, general typing utilities, and the runtime primitives built on them - encoding, codec-extensible JSON, bytes, and range-checked unix time",
+  "keywords": [
+    "type-safe",
+    "readonly",
+    "const",
+    "tuple",
+    "immutable",
+    "mapping",
+    "bidirectional",
+    "encoding",
+    "hex",
+    "base64",
+    "bigint",
+    "json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Onrail/ts-sdk.git",
+    "directory": "packages/utils"
+  },
+  "bugs": {
+    "url": "https://github.com/Onrail/ts-sdk/issues"
+  },
+  "homepage": "https://github.com/Onrail/ts-sdk/tree/main/packages/utils#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "types": "./dist/index.d.ts",
+    "import": "./dist/index.js",
+    "default": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "prepublishOnly": "pnpm test && pnpm build",
+    "build": "pnpm clean && tsc",
+    "test": "tsc -p tsconfig.test.json && tsc -p tests/loose/tsconfig.json && tsx --test tests/**/*.test.ts",
+    "clean": "rm -rf ./dist"
+  },
+  "engines": {
+    "node": ">=25.0.0"
+  }
+}

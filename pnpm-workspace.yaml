@@ -1,0 +1,11 @@
+packages:
+  - packages/*
+
+#esbuild ships prebuilt platform binaries, so its install script is redundant
+allowBuilds:
+  esbuild: false
+
+catalog:
+  "viem": "^2.55.11"
+  "@solana/kit": "^7.0.0"
+  "@solana/rpc-spec": "^7.0.0"

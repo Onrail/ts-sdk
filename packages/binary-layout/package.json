@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@onrail-xyz/binary-layout",
+  "version": "1.0.0",
+  "author": "nonergodic",
+  "license": "Apache-2.0",
+  "description": "TypeScript-native, declarative DSL for working with binary data",
+  "keywords": [
+    "typescript",
+    "binary",
+    "serialization",
+    "deserialization",
+    "parser",
+    "encoder",
+    "decoder",
+    "Uint8Array"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Onrail/ts-sdk.git",
+    "directory": "packages/binary-layout"
+  },
+  "bugs": {
+    "url": "https://github.com/Onrail/ts-sdk/issues"
+  },
+  "homepage": "https://github.com/Onrail/ts-sdk/tree/main/packages/binary-layout#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "types": "./dist/index.d.ts",
+    "import": "./dist/index.js",
+    "default": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "prepublishOnly": "pnpm test && pnpm build",
+    "build": "pnpm clean && tsc",
+    "test": "tsc -p tsconfig.test.json && tsx --test tests/**/*.test.ts",
+    "clean": "rm -rf ./dist"
+  },
+  "peerDependencies": {
+    "@onrail-xyz/utils": "^1.0.0"
+  },
+  "devDependencies": {
+    "@onrail-xyz/utils": "workspace:*"
+  },
+  "engines": {
+    "node": ">=25.0.0"
+  }
+}

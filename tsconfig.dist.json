@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  //type-checks the published declarations as a consumer on TypeScript's default (skipLibCheck
+  //  false) would: the builds skip lib checks, so nothing else ever reads what the emitter wrote
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "skipLibCheck": false,
+    //kit's and ox's declarations name WebCrypto and WebAuthn globals, which DOM declares
+    "lib": ["ESNext", "DOM"]
+  },
+  "include": ["packages/*/dist/**/*.d.ts"]
+}

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "onrail-ts-sdk",
+  "author": "nonergodic",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Onrail/ts-sdk.git"
+  },
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build && pnpm check:dist-types && pnpm check:unused-exports && pnpm check:imports",
+    "test": "pnpm -r build && pnpm -r test",
+    "check:dist-types": "node scripts/check-dist-types.mjs",
+    "check:unused-exports": "node scripts/check-unused-exports.mjs",
+    "check:imports": "node scripts/format-imports.mjs --check",
+    "format:imports": "node scripts/format-imports.mjs",
+    "clean": "pnpm -r clean && rm -rf node_modules .pnpm-store",
+    "version:bump": "node scripts/bump-versions.mjs",
+    "publish:all": "pnpm -r publish --access public"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.8",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=25.0.0",
+    "npm": "please-use-pnpm",
+    "pnpm": "^11",
+    "yarn": "please-use-pnpm"
+  },
+  "packageManager": "pnpm@11.20.0"
+}

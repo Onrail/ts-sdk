@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@onrail-xyz/amount",
+  "version": "1.0.0",
+  "author": "nonergodic",
+  "license": "Apache-2.0",
+  "description": "Handle amounts of different kinds with units in a type-safe manner using exact, arbitrary-precision rational arithmetic",
+  "keywords": [
+    "amount",
+    "unit",
+    "dimension",
+    "rational",
+    "money",
+    "currency",
+    "precision"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Onrail/ts-sdk.git",
+    "directory": "packages/amount"
+  },
+  "bugs": {
+    "url": "https://github.com/Onrail/ts-sdk/issues"
+  },
+  "homepage": "https://github.com/Onrail/ts-sdk/tree/main/packages/amount#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "types": "./dist/index.d.ts",
+    "import": "./dist/index.js",
+    "default": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "prepublishOnly": "pnpm test && pnpm build",
+    "build": "pnpm clean && tsc",
+    "test": "tsc -p tsconfig.test.json && tsx --test tests/**/*.test.ts",
+    "clean": "rm -rf ./dist"
+  },
+  "peerDependencies": {
+    "@onrail-xyz/utils": "^1.0.0"
+  },
+  "devDependencies": {
+    "@onrail-xyz/utils": "workspace:*"
+  },
+  "engines": {
+    "node": ">=25.0.0"
+  }
+}
