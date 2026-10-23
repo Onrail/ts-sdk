@@ -1,6 +1,6 @@
-import type { RoUint8Array } from "./typing.js";
+import type { RoUint8Array, If } from "./typing.js";
 
-type MaybePrefixed<P extends boolean> = P extends true ? `0x${string}` : string;
+type MaybePrefixed<P extends boolean> = If<P, `0x${string}`, string>;
 
 //inputs rejected for their content can be arbitrarily large payloads
 const preview = (input: string) =>

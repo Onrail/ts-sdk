@@ -187,6 +187,12 @@ describe("guessEip712Domain", () => {
     const sep = separatorOf(composePermitMsg(alice, bob, 1n, domain, 0));
     assert.deepStrictEqual(guessEip712Domain(name, verifyingContract, chainId, hex.decode(sep)), domain);
   });
+
+  it("takes the chain id as a number too, and returns it as the word", () => {
+    const domain = { name, version, chainId, verifyingContract } as const;
+    const sep = hex.decode(separatorOf(composePermitMsg(alice, bob, 1n, domain, 0)));
+    assert.deepStrictEqual(guessEip712Domain(name, verifyingContract, Number(chainId), sep), domain);
+  });
 });
 
 // ---- Live query tests (require network) ----

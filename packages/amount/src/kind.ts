@@ -1,5 +1,5 @@
-import type { Opts, RoArray, RoNeTuple, RoPair, Brand,
-              If, IsAny, IsNever, Extends, OptionalArg } from "@onrail-xyz/utils";
+import type { Opts, GetOpt, RoArray, RoNeTuple, RoPair,
+              Brand, If, IsAny, IsNever, Extends, OptionalArg } from "@onrail-xyz/utils";
 import { omit, fromEntries, pick, isArray } from "@onrail-xyz/utils";
 import { type Rationalish, Rational } from "./rational.js";
 import { findUnit, segment, symbolKey } from "./segmenting.js";
@@ -188,9 +188,6 @@ type KindOpts<I extends KindUnitsInput> = Opts<{
   human:  UnitSymbolsOf<UnitsSpecOf<I>>;
   atomic: UnitSymbolsOf<UnitsSpecOf<I>>;
 }>;
-//a meta symbol read off the whole record: one that may be undefined - or absent, where the
-//  record's own type declares it optional - may be unset on the kind
-type MetaOf<O, K extends "human" | "atomic"> = K extends keyof O ? O[K] : undefined;
 
 export function kind<
         N extends string,
@@ -205,10 +202,10 @@ export function kind<
     N,
     SystemInfoOf<I>,
     StandardInfoOf<I>,
-    MetaOf<O, "human">,
-    MetaOf<O, "atomic">
+    GetOpt<O, "human">,
+    GetOpt<O, "atomic">
   >,
-  MetaBrandTags<MetaOf<O, "human">, MetaOf<O, "atomic">, StandardInfoOf<I>["unit"], I>
+  MetaBrandTags<GetOpt<O, "human">, GetOpt<O, "atomic">, StandardInfoOf<I>["unit"], I>
 > {
   const isSystemsSpec = isArray(unitsInput) && isArray(unitsInput[0]);
   const systemEntries = (
@@ -307,7 +304,7 @@ export function identifyKind<const K extends Kind, A extends boolean = false>(
   kinds:           RoArray<K>,
   str:             string,
   allowAmbiguous?: A
-): A extends true ? K[] : K | undefined {
+): If<A, K[], K | undefined> {
   const { pairs } = segment(str);
   const symbols = pairs.map(p => str.substring(p.symbol[0], p.symbol[1]));
 
@@ -321,19 +318,14 @@ export function identifyKind<const K extends Kind, A extends boolean = false>(
 type UnitBaseSpec = { readonly symbols: RoNeTuple<SymbolSpec> };
 
 type UnitSpec<F extends boolean, D extends boolean> =
-  UnitBaseSpec & (
-    F extends true
-    ? D extends true
-      ? Partial<DecimalSpec<0>>
-      : Partial<ScaleSpec<1 | 1n>>
-    : D extends true ? DecimalSpec : ScaleSpec
-  );
+  UnitBaseSpec & If<F,
+    Partial<If<D, DecimalSpec<0>, ScaleSpec<1 | 1n>>>,
+    If<D, DecimalSpec, ScaleSpec>
+  >;
 
 type KindUnitsSpec<F extends boolean, D extends boolean> =
   D extends any
-  ? F extends true
-    ? readonly [UnitSpec<true, D>, ...UnitSpec<false, D>[]]
-    : RoNeTuple<UnitSpec<false, D>>
+  ? If<F, readonly [UnitSpec<true, D>, ...UnitSpec<false, D>[]], RoNeTuple<UnitSpec<false, D>>>
   : never;
 
 type KindUnits<U extends string> = { readonly [K in U]?: Unit };

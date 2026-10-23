@@ -1,13 +1,13 @@
 import type { Address, Lamports } from "@solana/kit";
 import type { Identity, RoArray, RoUint8Array, OptionalArg } from "@onrail-xyz/utils";
 import { argOf, restOf, valueIndexEntries, utf8 } from "@onrail-xyz/utils";
-import type { WithCustom, NumberSize,
-              CustomizableBytes, Conversion, Item,
+import type { NumberSize, CustomizableBytes,
+              Conversion, DefaultOptionItem, Item,
               Layout, Struct, DeriveType, UnwrapSingleton } from "@onrail-xyz/binary-layout";
-import { customizableBytes, boolItem, enumItem,
-         setEndianness, unwrapSingleton,
-         utf8Conversion, paddingItem, isItem,
-         withCustom, deserialize, calcStaticSize } from "@onrail-xyz/binary-layout";
+import { customizableBytes, boolItem,
+         enumItem, defaultOptionItem, setEndianness,
+         unwrapSingleton, utf8Conversion, paddingItem,
+         isItem, withCustom, deserialize, calcStaticSize } from "@onrail-xyz/binary-layout";
 import type { KindWithAtomic } from "@onrail-xyz/amount";
 import { amountItem, hashItem } from "@onrail-xyz/common";
 import { base58 } from "./encoding.js";
@@ -136,56 +136,20 @@ export const eventLayout       = discriminatedLayoutOf("event");
 export const cEnumItem = <const E extends RoArray<string>>(names: E, size: NumberSize = 1) =>
   enumItem(valueIndexEntries(names), { size, endianness: "little" });
 
-//an option whose body keeps its space when absent, holding a default - Solana's fixed-size
-//  account formats spell their options this way, with whichever tag width their encoding uses
-const baseDefaultOptionLayout = <const L extends Layout>(layout: L, tagSize: NumberSize) => ({
-  isSome: boolItem({ size: tagSize, endianness: "little" }),
-  value:  { binary: "bytes", layout },
-} as const);
-type BaseDefaultOption<L extends Layout> =
-  DeriveType<ReturnType<typeof baseDefaultOptionLayout<L>>>;
-
-//annotated so declaration emit prints the alias rather than WithCustom's evaluated form
-type _DefaultOptionItem<L extends Layout> =
-  WithCustom<ReturnType<typeof baseDefaultOptionLayout<L>>, DeriveType<L> | undefined>;
-
-const _defaultOptionItem = <const L extends Layout>(
-  layout:       L,
-  defaultValue: DeriveType<L>,
-  tagSize:      NumberSize,
-): _DefaultOptionItem<L> => withCustom(baseDefaultOptionLayout(layout, tagSize), {
-  //annotated: inferred, this return emits the deferred DeriveType conditional fully evaluated
-  //  (see discriminatedItem); the cast is sound - BaseDefaultOption<L>["value"] equals
-  //  DeriveType<L> at every concrete L, but tsc can't reduce it at an open L
-  to:   (obj: BaseDefaultOption<L>): DeriveType<L> | undefined =>
-          obj.isSome ? obj.value as DeriveType<L> : undefined,
-  from: (value: DeriveType<L> | undefined) =>
-          ( value === undefined
-            ? { isSome: false, value: defaultValue }
-            : { isSome: true,  value               }
-          ) as BaseDefaultOption<L>,
-});
-
-//an empty interface inheriting the impl's inferred shape: a nominal symbol that declaration
-//  emit prints by name at every embedding, with none of the shape spelled out by hand -
-//  see DeclarationEmit.md
-export interface DefaultOptionItem<L extends Layout>
-  extends ReturnType<typeof _defaultOptionItem<L>> {}
-
-export const defaultOptionItem: <const L extends Layout>(
-  layout:       L,
-  defaultValue: DeriveType<L>,
-  tagSize:      NumberSize,
-) => DefaultOptionItem<L> = _defaultOptionItem;
-
 //see https://docs.rs/solana-program-option/latest/solana_program_option/enum.COption.html -
-//  `#[repr(C)]`, hence the 4-byte tag, and packed as zeros when absent
-export const cOptionItem = <const L extends Layout>(layout: L): DefaultOptionItem<L> => {
+//  `#[repr(C)]`, hence the 4-byte tag, and packed as zeros when absent. spl-token's pack writes
+//  only the tag on None, so a cleared field keeps its former body: hence permissive
+const cOptionOpts = { size: 4, endianness: "little", permissive: true } as const;
+export interface COptionItem<L extends Layout> extends DefaultOptionItem<L, typeof cOptionOpts> {}
+
+export const cOptionItem = <const L extends Layout>(layout: L): COptionItem<L> => {
   const size = calcStaticSize(layout);
   if (size === null)
     throw new Error("COption: the body must be of static size");
 
-  return defaultOptionItem(layout, deserialize(layout, new Uint8Array(size)), 4);
+  //sound: tsc can't relate DeriveType<L> to defaultOptionItem's parameter at an open L
+  const zero = deserialize(layout, new Uint8Array(size));
+  return defaultOptionItem(layout, zero as any, cOptionOpts);
 };
 
 export const cOptionAddressItem = cOptionItem(addressItem);
@@ -263,7 +227,7 @@ export const addressLookupTableLayout = {
   lastExtendedSlot:           u64Item,
   lastExtendedSlotStartIndex: { binary: "uint", size: 1 },
   //bincode's Option in the fixed-size header: a 1-byte tag
-  authority:                  defaultOptionItem(addressItem, zeroAddress, 1),
+  authority:                  defaultOptionItem(addressItem, zeroAddress),
   _alignmentPadding:          paddingItem(2),
   addresses:                  { binary: "array", layout: addressItem },
 } as const satisfies Struct;

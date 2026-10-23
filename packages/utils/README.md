@@ -84,7 +84,7 @@ All four map `Uint8Array` and `RoUint8Array` onto each other, and pass functions
 - `HeadTail<T, Head, Tail>` – the tuple head/tail pattern, `T extends HeadTail<T, infer Head, infer Tail>`; keeps the `readonly` the hand-written spread form tends to drop
 - `ElementRest<T>` – extracts a fixed head, or otherwise a fixed last element, as `[element, rest]`; yields `undefined` when no position is guaranteed. For order-independent folds that can use fixed entries on either side of a runtime array, such as `[...entries, last]`
 - `Extends<T, U>` – distributes over `T`; `AnyExtend<T, U>` – some constituent of `T` extends `U`; `AllExtend<T, U>` – whole-type check, non-distributive; `IsAny<T>`, `IsNever<T>`, `IsUnion<T>`; `If<C, T, F>` – distributes too, so `If<boolean, T, F>` is `T | F`
-- `IsLiteral<T>` – whether `T` is a single primitive value (a literal, a unique symbol, `null`, `undefined`); a template literal pattern and a union are not
+- `IsLiteral<T>` – whether `T` is a single primitive value (a literal, a unique symbol, `null`, `undefined`); a template literal pattern, a union and `any` are not
 - `IsInteger<N>`, `IsSigned<N>` – whether a number literal is an integer / negative
 - `ExactKeys<K>` – whether a key (or index) argument names a definite set: a single literal key, or a fixed tuple of them; a union key or a runtime array may select any subset. The object and array helpers below take their exactness from it
 - `Not<B>`, `And<T, R?>`, `Or<T, R?>`, `Xor<T, R?>` – type-level boolean algebra over an array of operands or a single one (`R` folds in one more either way), three-valued: an indeterminate `boolean` operand propagates unless an absorbing operand settles the result anyway (`false` for `And`, `true` for `Or`; `Xor` has none). Empty `And` is `true`, empty `Or` and `Xor` `false`. Fixed elements at either end of an open tuple participate; its runtime middle is evaluated conservatively
@@ -157,6 +157,7 @@ pick({ a: 1, b: 2, c: 3 }, ["a", "b"]);       // => { readonly a: 1, readonly b:
 omit({ a: 1, b: 2, c: 3 }, "c");              // => { readonly a: 1, readonly b: 2 }
 omitUndefined({ a: 1, b: undefined });        // => { readonly a: 1 }
 replace({ a: 1, b: 2 }, "a", "new");          // => { readonly a: "new", readonly b: 2 }
+mapValues({ a: 1, b: 2 }, v => v + 1);        // => { readonly a: number, readonly b: number }
 merge({ a: 1 }, { a: 2, b: 3 });              // => { readonly a: 1, readonly b: 3 }
 
 spread({ a: 1, n: { b: 2, c: 3 } }, "n");     // => { readonly a: 1, readonly b: 2, readonly c: 3 }
@@ -168,6 +169,8 @@ nest({ a: 1, b: 2, c: 3 }, "n", ["b", "c"]);  // => { readonly a: 1, n: { readon
 The fallback admits `undefined`, so an optional options bag passes straight through. An omitted optional parameter infers its type parameter's default, which keeps the result exact; a fallback *variable* typed `X | undefined`, however, infers `X`, and the result claims `X`'s keys even when the variable holds `undefined`.
 
 `omitUndefined` is the runtime counterpart of `Opts`: in the result type, keys that may hold `undefined` become optional and keys that hold nothing else disappear, so the result spreads over a base record without clobbering its fields. `spread` rejects a nested object whose keys collide with the remaining outer keys, and `nest` a new key that collides with a remaining one – either would have to shadow.
+
+`mapValues` gives every key the callback's one return type – a key-dependent result would need a type lambda – so a caller whose callback depends on the key asserts the precise type itself. It visits what `Object.entries` visits: symbol keys are dropped and numeric keys reach the callback as strings.
 
 ### Deep Paths
 
@@ -194,6 +197,7 @@ A path is a tuple of keys. The `anyKey` wildcard traverses every property of an 
 ### Types
 
 - `Get<O, K>` – `O[K]` for a definitely-present key, `undefined` for an optional or absent one (a value merely annotated with an optional key may lack it); distributes over unions of objects
+- `GetOpt<O, K, Absent = undefined>` – `Get`'s counterpart for reading an options record: `O[K]` for a key that may be present, optional included, `Absent` for one that surely isn't; distributes over unions of objects, so a key only some of them carry still counts
 - `TrueKeys<O>` – the keys of a boolean record that map to `true`; the type-level "filter keys by predicate"
 - `OmitUndefined<O>`, `Replace<O, K, V>`, `Merge<T, U>`, `Spread<O, K>`, `Nest<O, NK, K>`, `DeepOmit<O, P>`, `DeepReplace<O, P, V>`, `FromEntries<A>` – the result types of the functions above; `TupleFromEntries<T>` is `FromEntries`' exact form for a tuple of entries
 - `ObjectEntry<K, V>` – a key/value pair
@@ -232,7 +236,7 @@ The nesting is shorthand – the spec denotes the row list
 ]
 ```
 
-and every mapping below is one way of reading those rows: which columns are the keys, and which are the value.
+and every mapping below is one way of reading those rows: which columns are the keys, and which are the value. `mappingRows(units)` returns the rows themselves, typed as the literal tuple above, for when what is wanted is the table rather than a lookup into it – a column of it, say, or the set of key paths.
 
 ### Usage
 
@@ -299,6 +303,7 @@ Up to 4 key columns are supported.
 
 - `constMap(entries, shape?)` – build the mapping
 - `ConstMap<Entries, Shape?>` – the type of the resulting mapping
+- `mappingRows(entries)` / `MappingRows<Entries>` – the row list a spec denotes
 - `MappingEntries` / `MappingEntry` – shape-only spec constraint: key/value pairs, any nesting
 - `MapLevel<K, V>` / `MapLevels<[K1, K2, ..., V]>` – spec constraints that also fix the column types
 - `ShapeLike` – the shape parameter type

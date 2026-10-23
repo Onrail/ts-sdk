@@ -113,6 +113,8 @@ type CartesianRightRecursive<M extends RoTuple> =
   ? Cartesian<IM[0], IM[1]>
   : M;
 
+export type MappingRows<M extends MappingEntries> = CartesianRightRecursive<M>;
+
 type Shape = RoPair<RoTuple<number>, RoTuple<number>>; //key columns, value columns
 type IndexLike = number | RoNeTuple<number>;
 export type ShapeLike = RoPair<IndexLike, IndexLike>;
@@ -467,6 +469,9 @@ const toMapping = (
 
   return [root, keyCartesianSet!.length];
 };
+
+export const mappingRows = <const M extends MappingEntries>(mappingEntries: M): MappingRows<M> =>
+  cartesianRightRecursive(mappingEntries);
 
 export function constMap<
   const M extends MappingEntries,

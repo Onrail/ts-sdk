@@ -8,10 +8,12 @@ import type { Brand, RoUint8Array, RoArray,
               RoPair, Existential, OptionalArg } from "@onrail-xyz/utils";
 import type { DeriveType, Layout, Conversion, CustomizableBytes } from "../src/index.js";
 import { serialize, deserialize, calcSize, calcStaticSize,
-         buildDiscriminator, buildDeserializer, setEndianness, withCustom,
-         pin, uintItem, intItem, bytesItem, arrayItem, packedItem,
-         switchItem, boolItem, paddingItem, enumItem, optionItem,
-         timestampItem, codecItem, brandConversion, utf8Conversion,
+         buildDiscriminator, buildDeserializer,
+         setEndianness, withCustom, pin, uintItem, intItem,
+         bytesItem, arrayItem, packedItem, switchItem,
+         boolItem, paddingItem, enumItem, nicheItem,
+         optionItem, defaultOptionItem, timestampItem,
+         codecItem, brandConversion, utf8Conversion,
          customizableBytes, leb128Codec, compactU16, rlpUint } from "../src/index.js";
 import { pinEq } from "./typeAssert.js";
 
@@ -455,6 +457,7 @@ describe("README: sugar", () => {
     assert.throws(() => deserialize(boolItem(), new Uint8Array([2])));
     assert.equal(deserialize(boolItem({ permissive: true }), new Uint8Array([2])), true);
     assert.equal(serialize(boolItem({ size: 4, endianness: "little" }), true).toHex(), "01000000");
+    assert.equal(serialize(boolItem(intItem(2)), true).toHex(), "0001");
   });
 
   it("enumItem maps names to values", () => {
@@ -463,11 +466,26 @@ describe("README: sugar", () => {
     assert.equal(serialize(myEnumItem, "bar").toHex(), "0300");
   });
 
-  it("optionItem encodes presence with a leading byte", () => {
+  it("nicheItem passes unreserved values through", () => {
+    const indexItem = nicheItem([[undefined, -1]], intItem(2));
+    pinEq<DeriveType<typeof indexItem>, number | undefined>(true);
+    assert.equal(serialize(indexItem, 5).toHex(), "0005");
+    assert.equal(serialize(indexItem, undefined).toHex(), "ffff");
+    assert.throws(() => serialize(indexItem, -1));
+
+    const timeoutItem = nicheItem([["never", "max"]], 4);
+    assert.equal(serialize(timeoutItem, "never").toHex(), "ffffffff");
+  });
+
+  it("optionItem encodes presence with a leading byte, defaultOptionItem keeps the space", () => {
     const myOptionItem = optionItem(uintItem(2));
     pinEq<DeriveType<typeof myOptionItem>, number | undefined>(true);
     assert.equal(serialize(myOptionItem, undefined).toHex(), "00");
     assert.equal(serialize(myOptionItem, 42).toHex(), "01" + "002a");
+
+    const myDefaultOptionItem = defaultOptionItem(uintItem(2), 0, { size: 4, endianness: "little" });
+    assert.equal(serialize(myDefaultOptionItem, undefined).toHex(), "00000000" + "0000");
+    assert.equal(serialize(myDefaultOptionItem, 42).toHex(), "01000000" + "002a");
   });
 
   it("timestampItem converts Dates and saturates", () => {

@@ -5,10 +5,11 @@ import type { DeriveType, Layout, Conversion, CustomizableBytes } from "../src/i
 import { serialize, deserialize, setEndianness, withCustom,
          pin, pipedConversion, spreadLayout, unwrapSingleton,
          buildDiscriminator, buildDeserializer, hasFixed, hasAs,
-         hasCustom, uintItem, intItem, bytesItem, arrayItem, packedItem,
-         switchItem, codecItem, customizableBytes, paddingItem, boolItem,
-         enumItem, optionItem, brandConversion, utf8Conversion, compactU16 } from "../src/index.js";
-import { pinEq } from "./typeAssert.js";
+         hasCustom, uintItem, intItem, bytesItem, arrayItem,
+         packedItem, switchItem, codecItem, customizableBytes,
+         paddingItem, boolItem, enumItem, nicheItem, optionItem,
+         defaultOptionItem, brandConversion, utf8Conversion, compactU16 } from "../src/index.js";
+import { pinEq, typeOnly } from "./typeAssert.js";
 
 describe("serialize return type", () => {
   it("tracks whether an output buffer is supplied", () => {
@@ -172,12 +173,10 @@ describe("setEndianness", () => {
     assert.deepEqual(deserialize(nle, Uint8Array.fromHex("010002000403")),
       { cmd: "a", sub: "b", x: 0x0304 });
 
-    if (false) {
-      //@ts-expect-error a switch still requires its tag and fields after changing endianness
-      serialize(le, {});
-      //@ts-expect-error nested tags are required too
-      serialize(nle, { cmd: "a", x: 1 });
-    }
+    //@ts-expect-error a switch still requires its tag and fields after changing endianness
+    typeOnly(() => serialize(le, {}));
+    //@ts-expect-error nested tags are required too
+    typeOnly(() => serialize(nle, { cmd: "a", x: 1 }));
   });
 });
 
@@ -543,6 +542,130 @@ describe("item factories", () => {
     assert.equal(deserialize(maybeU16, new Uint8Array([0])), undefined);
   });
 
+  it("option takes the tag's width and byte order", () => {
+    const maybeU8 = optionItem(uintItem(1), { size: 2, endianness: "little" });
+    assert.equal(serialize(maybeU8, 5).toHex(), "010005");
+    assert.equal(serialize(maybeU8, undefined).toHex(), "0000");
+    assert.equal(deserialize(maybeU8, new Uint8Array([1, 0, 5])), 5);
+  });
+
+  it("default option keeps the body's space, holding the default's encoding", () => {
+    const maybeU16 = defaultOptionItem(uintItem(2), 0xffff);
+    pinEq<DeriveType<typeof maybeU16>, number | undefined>(true);
+    assert.equal(serialize(maybeU16, undefined).toHex(), "00ffff");
+    assert.equal(serialize(maybeU16, 0x1234).toHex(), "011234");
+    assert.equal(deserialize(maybeU16, new Uint8Array([0, 0xff, 0xff])), undefined);
+    assert.equal(deserialize(maybeU16, new Uint8Array([1, 0xff, 0xff])), 0xffff);
+    //any other absent body would be a second encoding of the absence
+    assert.throws(() => deserialize(maybeU16, new Uint8Array([0, 0, 0])));
+
+    const cOption = defaultOptionItem({ k: uintItem(1), v: uintItem(1) }, { k: 0, v: 0 },
+                                      { size: 4, endianness: "little" });
+    assert.equal(serialize(cOption, undefined).toHex(), "000000000000");
+    assert.deepEqual(deserialize(cOption, serialize(cOption, { k: 1, v: 2 })), { k: 1, v: 2 });
+    //permissive reads any absent body of the default's size, and writes the default
+    const lenient = defaultOptionItem(uintItem(2), 0xffff, { permissive: true });
+    assert.equal(deserialize(lenient, new Uint8Array([0, 1, 2])), undefined);
+    assert.equal(serialize(lenient, undefined).toHex(), "00ffff");
+    assert.equal(deserialize(lenient, new Uint8Array([1, 1, 2])), 0x0102);
+    assert.equal("permissive" in lenient.id, false);
+
+    // @ts-expect-error - the absent body holds a value, never the absence itself
+    typeOnly(() => defaultOptionItem(uintItem(2), undefined));
+  });
+
+  it("niche surfaces reserved raw values and passes the rest through", () => {
+    const budget = nicheItem([[undefined, 0xffffffff]], 4);
+    pinEq<DeriveType<typeof budget>, number | undefined>(true);
+    assert.equal(serialize(budget, undefined).toHex(), "ffffffff");
+    assert.equal(serialize(budget, 7).toHex(), "00000007");
+    assert.equal(deserialize(budget, new Uint8Array([0xff, 0xff, 0xff, 0xff])), undefined);
+    assert.equal(deserialize(budget, new Uint8Array([0, 0, 0, 7])), 7);
+    //the raw niche would read back as its niche
+    assert.throws(() => serialize(budget, 0xffffffff), /is the niche of undefined/);
+  });
+
+  it("niche takes width, sign and primitive from its carrier", () => {
+    const index = nicheItem([["none", -1]], intItem(2));
+    pinEq<DeriveType<typeof index>, number | "none">(true);
+    assert.equal(serialize(index, "none").toHex(), "ffff");
+    assert.equal(deserialize(index, serialize(index, -2)), -2);
+
+    const max = 2n ** 256n - 1n;
+    const allowance = nicheItem([["unlimited", max], [null, 0n]], 32);
+    pinEq<DeriveType<typeof allowance>, bigint | "unlimited" | null>(true);
+    assert.equal(deserialize(allowance, serialize(allowance, "unlimited")), "unlimited");
+    assert.equal(deserialize(allowance, serialize(allowance, null)), null);
+    assert.equal(deserialize(allowance, serialize(allowance, 5n)), 5n);
+
+    const lane = nicheItem.bits([[null, 7]], 3);
+    const word = packedItem({ n: lane, rest: uintItem.bits(5) });
+    assert.equal(serialize(word, { n: null, rest: 0 }).toHex(), "e0");
+    assert.deepEqual(deserialize(word, new Uint8Array([0x41])), { n: 2, rest: 1 });
+    //a bits item in the sized slot is the same lane
+    const { custom: _, ...viaItem } = nicheItem([[null, 7]], uintItem.bits(3));
+    assert.deepEqual(viaItem, { binary: "uint", bits: 3 });
+  });
+
+  it("niche and enum spell the carrier's extremes as min and max", () => {
+    const budget = nicheItem([[undefined, "max"]], 4);
+    pinEq<DeriveType<typeof budget>, number | undefined>(true);
+    assert.equal(serialize(budget, undefined).toHex(), "ffffffff");
+    assert.equal(serialize(nicheItem([[null, "min"]], intItem(4)), null).toHex(), "80000000");
+    assert.equal(serialize(nicheItem([[null, "max"]], intItem(4)), null).toHex(), "7fffffff");
+    assert.equal(serialize(nicheItem([["all", "max"]], 32), "all").toHex(), "ff".repeat(32));
+    const word = packedItem({ n: nicheItem.bits([[null, "max"]], 3), rest: uintItem.bits(5) });
+    assert.equal(serialize(word, { n: null, rest: 0 }).toHex(), "e0");
+    assert.equal(serialize(enumItem([["none", "max"], ["some", 0]], 2), "none").toHex(), "ffff");
+    //a bound resolves before the distinctness check
+    assert.throws(() => nicheItem([[undefined, "min"], [null, 0]]), /not distinct: 0, 0/);
+  });
+
+  it("niche rejects dead and ambiguous niches", () => {
+    //a widened width defers the primitive to runtime
+    assert.throws(() => nicheItem([[undefined, 1]], 8 as number), /is a number, but u64 derives a bigint/);
+    assert.throws(() => nicheItem([[undefined, 256]]), /Niche 256 does not fit in u8/);
+    assert.throws(() => nicheItem([[undefined, 128]], intItem(1)), /does not fit in i8/);
+    assert.throws(() => nicheItem([[undefined, 1], [null, 1]]), /not distinct/);
+    assert.throws(() => nicheItem([[null, 1], [null, 2]]), /not distinct/);
+    // @ts-expect-error - a numeric niche value would collide with the passed-through integers
+    typeOnly(() => nicheItem([[5, 1]]));
+    // @ts-expect-error - a raw niche is in the carrier's primitive
+    assert.throws(() => nicheItem([[undefined, 1]], 8), /is a number, but u64 derives a bigint/);
+    // @ts-expect-error - the carrier is a plain integer
+    typeOnly(() => nicheItem([[undefined, 2]], boolItem()));
+  });
+
+  it("enum and bool take their carrier in the width slot", () => {
+    const signed = enumItem([["down", -1], ["up", 1]], intItem(1));
+    assert.equal(serialize(signed, "down").toHex(), "ff");
+    assert.equal(deserialize(signed, new Uint8Array([1])), "up");
+
+    const wide = enumItem([["a", 0n], ["b", 1n << 63n]], 8);
+    assert.equal(serialize(wide, "b").toHex(), "8000000000000000");
+    assert.equal(deserialize(wide, serialize(wide, "a")), "a");
+    // @ts-expect-error - an 8-byte enum's values are bigints
+    assert.throws(() => enumItem([["a", 0]], 8), /is a number, but u64 derives a bigint/);
+
+    const littleU64 = uintItem(8, { endianness: "little" });
+    const cBool = boolItem(littleU64);
+    pinEq<DeriveType<typeof cBool>, boolean>(true);
+    assert.equal(serialize(cBool, true).toHex(), "0100000000000000");
+    assert.throws(() => deserialize(cBool, serialize(littleU64, 2n)));
+    const laxBool = boolItem({ carrier: littleU64, permissive: true });
+    assert.equal(deserialize(laxBool, serialize(littleU64, 2n)), true);
+    assert.equal(deserialize(boolItem(intItem(4)), serialize(intItem(4), 1)), true);
+    //true is written as 1, which no i1 holds
+    assert.throws(() => boolItem(intItem.bits(1)), /Bool value 1 does not fit in i1/);
+    // @ts-expect-error - the item brings its own byte order
+    typeOnly(() => boolItem({ carrier: littleU64, endianness: "big" }));
+    // @ts-expect-error - ...and its own width
+    typeOnly(() => boolItem({ carrier: littleU64, size: 8 }));
+    //the carrier once rode in `size`, which elsewhere means a length prefix
+    // @ts-expect-error - a size is a width, never the carrier itself
+    typeOnly(() => boolItem({ size: littleU64 }));
+  });
+
   it("customizable bytes: the two shorthands, the pinned fragment, or content", () => {
     pinEq<
       CustomizableBytes,
@@ -594,42 +717,58 @@ describe("item factories", () => {
     assert.equal(deserialize(u32, serialize(u32, "7")), "7");
     assert.equal(deserialize(u64, serialize(u64, "7")), "7");
     // @ts-expect-error - an 8-byte field hands its conversion a bigint
-    uintItem(8, { custom: numberConv });
+    typeOnly(() => uintItem(8, { custom: numberConv }));
     // @ts-expect-error - and a 4-byte field a number
-    uintItem(4, { custom: bigintConv });
+    typeOnly(() => uintItem(4, { custom: bigintConv }));
     // @ts-expect-error - fixed follows the same primitive
-    uintItem(8, { fixed: 5 });
+    typeOnly(() => uintItem(8, { fixed: 5 }));
     // @ts-expect-error - a widened width may yield either, so a one-primitive conversion won't do
-    uintItem(8 as number, { custom: numberConv });
+    typeOnly(() => uintItem(8 as number, { custom: numberConv }));
     const wide = uintItem(8 as number, { custom: eitherConv });
     assert.equal(deserialize(wide, serialize(wide, "7")), "7");
     //bit widths cut at numberMaxBits
     uintItem.bits(53, { custom: numberConv });
     // @ts-expect-error - 54 bits derive bigint
-    uintItem.bits(54, { custom: numberConv });
-    //bool and enum run in number, so their widths must derive it
-    // @ts-expect-error - a bool wider than numberMaxSize would be handed a bigint
-    boolItem(8);
-    // @ts-expect-error - same for enums
-    enumItem([["a", 0]], 7);
-    // @ts-expect-error - and for bit widths
-    enumItem.bits([["a", 0]], 54);
+    typeOnly(() => uintItem.bits(54, { custom: numberConv }));
+    //bool, enum and niche convert from their width's primitive
+    const u64Bool = boolItem(8);
+    pinEq<DeriveType<typeof u64Bool>, boolean>(true);
+    assert.equal(serialize(u64Bool, true).toHex(), "0000000000000001");
+    // @ts-expect-error - a 7-byte enum reads bigints
+    assert.throws(() => enumItem([["a", 0]], 7), /is a number, but u56 derives a bigint/);
+    // @ts-expect-error - and so does a 54-bit one
+    assert.throws(() => enumItem.bits([["a", 0]], 54), /is a number, but u54 derives a bigint/);
   });
 
   it("factory opts admit only coherent surfacing spellings", () => {
     assert.equal(hasAs(uintItem(1, { fixed: 0, as: "x" })), true);
     // @ts-expect-error - as states a constant's surfaced value: it comes with fixed
-    uintItem(1, { as: "x" });
+    typeOnly(() => uintItem(1, { as: "x" }));
     // @ts-expect-error - as beside custom is redundant
-    bytesItem({ fixed: new Uint8Array(1), as: "x", custom: utf8Conversion });
+    typeOnly(() => bytesItem({ fixed: new Uint8Array(1), as: "x", custom: utf8Conversion }));
     // @ts-expect-error - the rule holds for every kind
-    packedItem({ a: uintItem.bits(8) }, { as: "x" });
+    typeOnly(() => packedItem({ a: uintItem.bits(8) }, { as: "x" }));
     // @ts-expect-error - switch opts included
-    switchItem("k", uintItem(1), [[1, {}]], { as: "x" });
+    typeOnly(() => switchItem("k", uintItem(1), [[1, {}]], { as: "x" }));
     //raw literals stay total: a stray as is ignored, as wins over custom
     assert.equal(deserialize({ binary: "uint", size: 1, as: "stray" } as const, new Uint8Array([7])), 7);
     assert.equal(
       deserialize({ ...boolItem(), fixed: 1, as: "yes" } as const, new Uint8Array([1])), "yes");
+  });
+
+  //regression: an item passed as an opts record whose width happened to be a number, and was
+  //  nested whole into the width
+  it("width slots that take only numbers reject items", () => {
+    // @ts-expect-error - the presence tag is a size or opts
+    typeOnly(() => optionItem(uintItem(1), uintItem(2)));
+    // @ts-expect-error - ...without the carrier slot's item forms
+    typeOnly(() => optionItem(uintItem(1), { size: 1, carrier: uintItem(2) }));
+    // @ts-expect-error - the bit form takes a bit count; an item goes into boolItem itself
+    typeOnly(() => boolItem.bits(uintItem.bits(3)));
+    // @ts-expect-error - a packed word's width is a byte count
+    typeOnly(() => packedItem({ a: uintItem.bits(8) }, uintItem(1)));
+    // @ts-expect-error - and a lane's a bit count
+    typeOnly(() => packedItem.bits({ a: uintItem.bits(2) }, uintItem.bits(3)));
   });
 
   it("utf8 conversion is strict in both directions", () => {
@@ -811,8 +950,8 @@ describe("prefix widths", () => {
     const six = { data: bytesItem(uintItem(6)) } as const satisfies Layout;
     assert.deepEqual(deserialize(six, serialize(six, { data: new Uint8Array([1]) })), { data: new Uint8Array([1]) });
     // @ts-expect-error an 8-byte uint derives bigint, which is no count
-    bytesItem(uintItem(8));
+    typeOnly(() => bytesItem(uintItem(8)));
     // @ts-expect-error same rule for array lengths
-    arrayItem(uintItem(1), uintItem(8));
+    typeOnly(() => arrayItem(uintItem(1), uintItem(8)));
   });
 });

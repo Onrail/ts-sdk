@@ -126,9 +126,9 @@ const processResult = (
 
 //Multicall3's deterministic deployment puts it at the same address on nearly every chain, but a
 //  few (zkSync and friends) deviate, hence the chain config takes precedence when it has an entry
-const CANONICAL_MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11" as const;
+const canonicalMulticall3 = "0xcA11bde05977b3631167028862bE2a173976CA11" as const;
 const multicall3Of = (viemClient: PublicClient) =>
-  viemClient.chain?.contracts?.multicall3?.address ?? CANONICAL_MULTICALL3;
+  viemClient.chain?.contracts?.multicall3?.address ?? canonicalMulticall3;
 
 const encodeAggregate3 = (calls: RoArray<QueryCall>): Hex =>
   encodeFunctionData({
@@ -157,7 +157,7 @@ async function aggregate3(viemClient: PublicClient, callData: Hex, blockHash: He
   });
 }
 
-const MAX_RETRIES = 3;
+const maxRetries = 3;
 
 export type BlockSpec<S extends "hash" | "ref" = "hash" | "ref"> =
   S extends "hash"
@@ -173,7 +173,7 @@ async function resolveBlock(
 ) {
   const blockIdentifier = typeof block === "bigint" ? { blockNumber: block } : { blockTag: block };
   let lastError: unknown;
-  for (let attempt = 0; attempt < MAX_RETRIES; ++attempt) {
+  for (let attempt = 0; attempt < maxRetries; ++attempt) {
     const blockInfo = await viemClient.getBlock(blockIdentifier);
 
     const blockHash = throwOnNullish(blockInfo.hash, "Block hash is null (pending block)");
@@ -193,7 +193,7 @@ async function resolveBlock(
     };
   }
   throw new Error(
-    `Querying canonical block failed ${MAX_RETRIES} times in a row`,
+    `Querying canonical block failed ${maxRetries} times in a row`,
     { cause: lastError },
   );
 }

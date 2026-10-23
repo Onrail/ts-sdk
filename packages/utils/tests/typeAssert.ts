@@ -7,5 +7,9 @@ type Equal<A, B> =
 //  failure prints both
 export const pinEq = <A, B>(_: Equal<A, B> extends true ? true : { error: [A, B] }) => {};
 
+//typechecks a call without running it, for calls the types reject: a rejected call's runtime
+//  behavior is unspecified, so running one would pin whatever it happens to do
+export const typeOnly = (_: () => unknown) => {};
+
 //for pins of a relation other than identity, such as assignability
 export type Assert<T extends true> = T;

@@ -13,7 +13,7 @@ import { Amount, Rate, Rational, kind, scalar, tenToThe, getUnit,
          getDecimals, identifyKind, isAmount, isRate, kindOf,
          numKindOf, denKindOf, invert, min, max, sum, clamp,
          compare, allocate, amountCodec, rateCodec, rationalCodec } from "../src/index.js";
-import { pinEq } from "./typeAssert.js";
+import { pinEq, typeOnly } from "./typeAssert.js";
 
 // ---- Fixtures: the kinds the README defines, spelled as it spells them ----
 
@@ -197,7 +197,7 @@ describe("README: Kind", () => {
     kind("A", [{ symbols: [{ symbol: "a" }], oom: 0 }]);
     kind("B", [{ symbols: [{ symbol: "b" }], scale: 1 }]);
     // @ts-expect-error the first unit is the standard unit — scale 1 by definition
-    kind("C", [{ symbols: [{ symbol: "c" }], oom: 5 }]);
+    typeOnly(() => kind("C", [{ symbols: [{ symbol: "c" }], oom: 5 }]));
   });
 
   it("formats per symbol options", () => {
@@ -540,7 +540,7 @@ describe("README: kind-generic code", () => {
       const den: typeof USD = denKindOf(rate);
       const swapped: Rate<typeof USD, K> = invert(rate);
       // @ts-expect-error KindWithAtomic admits only "atomic" and "standard"
-      amount.floorTo("ETH");
+      typeOnly(() => amount.floorTo("ETH"));
       return { erased, exact, z, o, num, den, swapped };
     };
     const r = generic(eth(1), Rate.from(1, ETH, USD));
@@ -571,7 +571,7 @@ describe("README: kind-generic code", () => {
     pinEq<typeof atomicOfEither, Amount<typeof ETH | typeof USD>>(true);
     assert.equal(atomicOfEither.in("atomic"), 1n);
     // @ts-expect-error "wei" is not a symbol of every union member
-    Amount.from(1, either, "wei");
+    typeOnly(() => Amount.from(1, either, "wei"));
   });
 });
 

@@ -213,7 +213,7 @@ const layout = { authority: cOptionAddressItem };
 // authority derives Address | undefined
 ```
 
-`cOptionItem(layout)` is `COption` itself: a 4-byte tag, and a body that keeps its space when absent, holding the value zero bytes decode to (so the layout must be of static size). `cOptionAddressItem` and `cOptionLamportsItem(solKind?)` are its SPL instances. `defaultOptionItem(layout, defaultValue, tagSize)` is the general form, for fixed-size options with another tag width or absent value – the address lookup table's bincode-encoded `authority` has a 1-byte tag. All of them are `DefaultOptionItem<L>`s.
+`cOptionItem(layout)` is `COption` itself, a `COptionItem<L>`: binary-layout's [`defaultOptionItem`](https://github.com/Onrail/ts-sdk/tree/main/packages/binary-layout#option) with a 4-byte little-endian tag and an absent body written as zeros (so the layout must be of static size). It is `permissive`, because spl-token writes only the tag when it clears a field, so the absent body read back may hold the field's former value. `cOptionAddressItem` and `cOptionLamportsItem(solKind?)` are its SPL instances. The address lookup table's bincode-encoded `authority` is a `defaultOptionItem` with a 1-byte tag.
 
 ## Instruction Composition
 

@@ -5,6 +5,7 @@ import type { Layout } from "../src/index.js";
 import { serialize, deserialize, fitsInBits, readNum, writeNum,
          calcSize, calcStaticSize, withCustom, uintItem,
          arrayItem, switchItem, leb128Codec, leb128, compactU16 } from "../src/index.js";
+import { typeOnly } from "./typeAssert.js";
 
 const roundtrip = <const L extends Layout>(layout: L, data: any, expectedHex?: string) => {
   const encoded = serialize(layout, data);
@@ -90,9 +91,9 @@ describe("readNum / writeNum", () => {
     assert.equal(fitsInBits(-(2 ** 52), 53, true), true);
     assert.equal(fitsInBits(2 ** 52, 53, true), false);
     // @ts-expect-error - a wider field holds a bigint, so the question is refused for a number
-    fitsInBits(1, 54, false);
+    typeOnly(() => fitsInBits(1, 54, false));
     // @ts-expect-error - a width known only at runtime may be wide, too
-    fitsInBits(1, 8 as number, false);
+    typeOnly(() => fitsInBits(1, 8 as number, false));
 
     //past the number path the same answers come from truncation round-tripping
     assert.equal(fitsInBits(2n ** 64n - 1n, 64, false), true);

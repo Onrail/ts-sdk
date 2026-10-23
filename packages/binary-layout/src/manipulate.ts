@@ -146,13 +146,14 @@ type SpreadableFieldStruct<F> =
 //  type-erased call sites from collapsing to never, as there). Omitted fields - padding, magic -
 //  derive no key, so a name they share collides with nothing
 type SpreadableNames<S extends Struct> =
-  IsAny<S> extends true
-  ? string
-  : string & TrueKeys<{ [K in keyof S]:
+  If<IsAny<S>,
+    string,
+    string & TrueKeys<{ [K in keyof S]:
       SpreadableFieldStruct<S[K]> extends infer F extends Struct
       ? If<IsNever<F>, false, IsNever<NonOmittedKeys<F> & Exclude<NonOmittedKeys<S>, K>>>
       : false
-    }>;
+    }>
+  >;
 
 //the derived value after the spread - named so the conversion below can state it, which is what
 //  keeps the inferred T precise instead of collapsing to the erased shape objSpread returns

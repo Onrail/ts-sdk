@@ -1,15 +1,16 @@
 import type { RoUint8Array, RoArray, RoPair, Opts,
               Merge, Get, Brand, Unbrand, OptionalArg } from "@onrail-xyz/utils";
-import { assertDistinct, zip, isUint8Array, merge } from "@onrail-xyz/utils";
+import { assertDistinct, isUint8Array, merge } from "@onrail-xyz/utils";
 import type { Layout, LayoutObject, Struct,
-              Endianness, BitOrder, Conversion, NumType,
-              NumSizeToPrimitive, NumBitsToPrimitive,
-              NumberSize, NumberBits, Count, IdItem,
+              Endianness, BitOrder, Conversion,
+              NumType, NumSizeToPrimitive, NumBitsToPrimitive,
+              NumberSize, Count, IdItem, NumItem, Surfacing,
               SwitchItem, SwitchVariant, VariantId, VariantBody,
               CodecItem, DeriveType, BinaryLiteral, IntegerLiteral } from "./layout.js";
-import { bitsPerByte, numberMaxSize } from "./layout.js";
-import { isItem, isLayout, hasFixed, hasCustom, isRangeId, variantTagMatches } from "./utils.js";
-import { fitsInBits } from "./numbers.js";
+import { isItem, isLayout, hasFixed, hasCustom, isRangeId,
+         variantTagMatches, numBitWidth, numBitsToPrimitive } from "./utils.js";
+import { checkInDomain, domainBounds } from "./numbers.js";
+import { serialize } from "./serialize.js";
 
 // ---- kind factories ----
 
@@ -21,15 +22,14 @@ type Width = "size" | "length" | "bits";
 //  `Count` itself would leave the conditional undecided at an open O: a prefix item of number
 //  width is structurally an opts record with a `size`, so tsc keeps the count branch alive
 type WidthOpts<O, K extends Width> =
-  O extends number | { readonly binary: BinaryLiteral } ? { readonly [P in K]: O } : O;
+  O extends number | { binary: BinaryLiteral } ? { readonly [P in K]: O } : O;
 //a defaulted width sits in opts like every other optional member: widthOf applies the unit
 //  width - the default of every kind that defaults its width at all - and WidthOf reads the
-//  literal back out of the normalized slot or falls back to it. W is the widths the kind admits
-type WidthOf<O, K extends Width, W extends number = number> =
-  Get<WidthOpts<O, K>, K> extends infer X extends W ? X : 1;
-const widthOf =
-  <O, K extends Width, W extends number = number>(specified: Count | undefined) =>
-    (specified ?? 1) as WidthOf<O, K, W>;
+//  literal back out of the normalized slot or falls back to it
+type WidthOf<O, K extends Width> =
+  Get<WidthOpts<O, K>, K> extends infer X extends number ? X : 1;
+const widthOf = <O, K extends Width>(specified: number | undefined) =>
+  (specified ?? 1) as WidthOf<O, K>;
 const widthOpts = <K extends Width, const O>(key: K, arg: O | undefined): WidthOpts<O, K> =>
   (typeof arg === "number" || isItem(arg) ? { [key]: arg } : arg ?? {}) as WidthOpts<O, K>;
 
@@ -49,9 +49,9 @@ type BitsNumOpts <B extends number> = NumOpts<NumBitsToPrimitive<B>>;
 
 //each factory's own fields, named for the annotated returns to print by: unannotated, the
 //  declarations spell out Merge's body
-type NumBase<BL extends IntegerLiteral, S extends number> =
+type SizedNumBase<BL extends IntegerLiteral, S extends number> =
   { readonly binary: BL, readonly size: S };
-type BitsBase<BL extends IntegerLiteral, B extends number> =
+type BitsNumBase<BL extends IntegerLiteral, B extends number> =
   { readonly binary: BL, readonly bits: B };
 type BytesBase =
   { readonly binary: "bytes" };
@@ -73,12 +73,12 @@ type SizedNumFactory<BL extends IntegerLiteral> =
   <S extends number, const O extends SizedNumOpts<S> = {}>(
     size:      S,
     ...[opts]: OptionalArg<O>
-  ) => Merge<NumBase<BL, S>, O>;
+  ) => Merge<SizedNumBase<BL, S>, O>;
 type BitsNumFactory<BL extends IntegerLiteral> =
   <B extends number, const O extends BitsNumOpts<B> = {}>(
     bits:      B,
     ...[opts]: OptionalArg<O>
-  ) => Merge<BitsBase<BL, B>, O>;
+  ) => Merge<BitsNumBase<BL, B>, O>;
 type NumFactory<BL extends IntegerLiteral> = SizedNumFactory<BL> & { bits: BitsNumFactory<BL> };
 
 const numFactory = <BL extends IntegerLiteral>(binary: BL): NumFactory<BL> => {
@@ -90,8 +90,9 @@ const numFactory = <BL extends IntegerLiteral>(binary: BL): NumFactory<BL> => {
 export const uintItem = numFactory("uint");
 export const intItem  = numFactory("int");
 
-//an opts record is not an item: without the ban, a uint item too wide to be a prefix would pass
-//  as a record whose `size` happens to be a number
+//an opts record is not an item: without the ban, an item the slot does not take (a uint too
+//  wide to be a prefix, a surfaced integer as a carrier, any item where widths are plain
+//  numbers) would pass as a record whose width happens to be a number
 type NotAnItem = { readonly binary?: never };
 type BytesOpts = NotAnItem & BaseOpts<unknown> & Opts<{ size: Count, layout: Layout }>;
 
@@ -108,7 +109,7 @@ export const arrayItem = <const L extends Layout, const O extends Count | ArrayO
 ): Merge<ArrayBase<L>, WidthOpts<O, "length">> =>
   merge({ binary: "array", layout }, widthOpts("length", lengthOrOpts));
 
-type PackedOpts = BaseOpts<LayoutObject> & Opts<{
+type PackedOpts = NotAnItem & BaseOpts<LayoutObject> & Opts<{
   size:       number,
   endianness: Endianness,
   bitOrder:   BitOrder,
@@ -116,20 +117,23 @@ type PackedOpts = BaseOpts<LayoutObject> & Opts<{
 
 //a lane inherits nothing but its place, and its width defaults to the layout's bit sum; byte
 //  order stays with the enclosing word, so the bit form has no endianness to offer
-type BitsPackedOpts = BaseOpts<LayoutObject> & Opts<{ bits: number, bitOrder: BitOrder }>;
+type BitsPackedOpts = NotAnItem & BaseOpts<LayoutObject> & Opts<{
+  bits:     number,
+  bitOrder: BitOrder,
+}>;
 
 export const packedItem = Object.assign(
-  <const S extends Struct, const O extends number | PackedOpts = {}>(
-    layout:          S,
-    ...[sizeOrOpts]: OptionalArg<O>
-  ): Merge<PackedBase<S>, WidthOpts<O, "size">> =>
-    merge({ binary: "packed", layout }, widthOpts("size", sizeOrOpts)), {
-  bits: <const S extends Struct, const O extends number | BitsPackedOpts = {}>(
-    layout:          S,
-    ...[bitsOrOpts]: OptionalArg<O>
-  ): Merge<PackedBase<S>, WidthOpts<O, "bits">> =>
-    merge({ binary: "packed", layout }, widthOpts("bits", bitsOrOpts)),
-});
+  < const S extends Struct,
+    const O extends number | PackedOpts = {},
+  >(layout: S, ...[sizeOrOpts]: OptionalArg<O>): Merge<PackedBase<S>, WidthOpts<O, "size">> =>
+    merge({ binary: "packed", layout }, widthOpts("size", sizeOrOpts)),
+  { bits: <const S extends Struct, const O extends number | BitsPackedOpts = {}>(
+      layout:          S,
+      ...[bitsOrOpts]: OptionalArg<O>
+    ): Merge<PackedBase<S>, WidthOpts<O, "bits">> =>
+      merge({ binary: "packed", layout }, widthOpts("bits", bitsOrOpts)),
+  },
+);
 
 type UnnamedSwitchRow<
   I extends VariantId   = VariantId,
@@ -236,19 +240,11 @@ const checkIdDomain = (id: IdItem, ids: RoArray<VariantId>): void => {
   if (id.binary === "codec")
     return;
 
-  const bits = id.size * bitsPerByte;
+  const bits = numBitWidth(id);
   const signed = id.binary === "int";
-  const primitive = id.size > numberMaxSize ? "bigint" : "number";
   for (const vid of ids)
-    for (const bound of isRangeId(vid) ? vid : [vid]) {
-      if (typeof bound !== primitive)
-        throw new Error(`switch variant id ${bound} is a ${typeof bound}, ` +
-                        `but a ${id.size}-byte id reads as a ${primitive}`);
-
-      const fits = fitsInBits(bound as any, bits as any, signed);
-      if (!fits)
-        throw new Error(`switch variant id ${bound} does not fit in ${signed ? "i" : "u"}${bits}`);
-    }
+    for (const bound of isRangeId(vid) ? vid : [vid])
+      checkInDomain(bound, bits, signed, "switch variant id");
 };
 
 type SwitchOpts = BaseOpts<LayoutObject>;
@@ -367,152 +363,321 @@ export const paddingItem = Object.assign(
   { bits: <B extends number>(bits: B) => ({ binary: "uint", bits, fixed: 0 } as const) },
 );
 
-// ---- custom uints ----
+// ---- integer carriers ----
 
-//the width slot arrives already normalized, so WidthOf reads the caller's literal straight off
-//  T, and the cast that produces T is where each factory states what it consumed
-type CustomUintBase<T, C extends Conversion<number>> =
-  { readonly binary: "uint", readonly size: WidthOf<T, "size">, readonly custom: C };
-const customUint = <
-  const T extends Opts<{ size: NumberSize }>,
-        C extends Conversion<number>,
->(opts: T, custom: C): Merge<CustomUintBase<T, C>, T> =>
-  merge({ binary: "uint", size: widthOf<T, "size">(opts.size), custom }, opts);
+type UintOpts<S extends number = number> = Opts<{ size: S /*default 1*/, endianness: Endianness }>;
+type PermissiveOpts = Opts<{ permissive: boolean }>;
 
-const customUintBits = <B extends NumberBits, C extends Conversion<number>>(bits: B, custom: C) =>
-  ({ binary: "uint", bits, custom } as const);
+export type NumCarrier = NumItem & { readonly [K in keyof Surfacing]?: undefined };
+
+type SlotUintOpts<S extends number = number> = UintOpts<S> & { readonly carrier?: never };
+type CarrierOpts = NotAnItem & (
+  | SlotUintOpts
+  | { readonly carrier: NumCarrier } & { readonly [K in keyof UintOpts]?: never }
+);
+
+type CarrierSlot<O> =
+  O extends number
+  ? { readonly size: O }
+  : O extends { binary: BinaryLiteral }
+  ? { readonly carrier: O }
+  : O;
+const carrierSlot = <const O>(arg: O | undefined): CarrierSlot<O> => (
+  typeof arg === "number"
+  ? { size: arg }
+  : isItem(arg)
+  ? { carrier: arg }
+  : arg ?? {}
+) as CarrierSlot<O>;
+
+type SlotUint<O> =
+  Merge<SizedNumBase<"uint", WidthOf<O, "size">>, Omit<CarrierSlot<O>, "permissive">>;
+type SizedCarrier<O> =
+  Get<CarrierSlot<O>, "carrier"> extends infer I extends NumCarrier ? I : SlotUint<O>;
+const sizedCarrier = <const O>(arg: O | undefined) => {
+  const { permissive, ...opts } = carrierSlot(arg) as CarrierOpts & PermissiveOpts;
+  const carrier =
+    opts.carrier ?? merge({ binary: "uint", size: widthOf<O, "size">(opts.size) }, opts);
+  return { carrier: carrier as SizedCarrier<O>, permissive: permissive ?? false };
+};
+
+type BitsCarrier<B extends number> = BitsNumBase<"uint", B>;
+
+//DeriveType<I> itself, which tsc can't see to be a NumType while I is open
+type CarrierRaw<I extends NumCarrier> = Extract<DeriveType<I>, NumType>;
+
+type Converted<I extends NumCarrier, T> =
+  Merge<{ readonly custom: Conversion<CarrierRaw<I>, T> }, I>;
+
+const converted = <I extends NumCarrier, T>(
+  carrier: I,
+  custom:  Conversion<NoInfer<CarrierRaw<I>>, T>,
+): Converted<I, T> =>
+  merge({ custom }, carrier);
+
+type RawSpec<R extends NumType> = R | "min" | "max";
+
+//a raw value the carrier cannot hold is never read back, and a repeat on either side makes the
+//  mapping non-injective - the silent round-trip break checkVariantReachability rejects for
+//  switch variants
+const resolveMapping = <V, R extends NumType>(
+  carrier: NumCarrier,
+  entries: RoArray<RoPair<V, RawSpec<R>>>,
+  subject: string,
+): RoArray<RoPair<V, R>> => {
+  const bits = numBitWidth(carrier);
+  const signed = carrier.binary === "int";
+  const [min, max] = domainBounds(bits, signed) as RoPair<R, R>;
+  const resolved = entries.map(([value, raw]): RoPair<V, R> =>
+    [value, raw === "min" ? min : raw === "max" ? max : raw]
+  );
+  for (const [, raw] of resolved)
+    checkInDomain(raw, bits, signed, subject);
+
+  assertDistinct(...resolved.map(([value]) => value));
+  assertDistinct(...resolved.map(([, raw]) => raw));
+  return resolved;
+};
 
 // ---- bool ----
 
-const boolConversion = (permissive: boolean) => ({
-  to: (encoded: number): boolean => {
-    if (encoded === 0)
-      return false;
-
-    if (permissive || encoded === 1)
-      return true;
-
-    throw new Error(`Invalid bool value: ${encoded}`);
-  },
-  from: (value: boolean): number => value ? 1 : 0,
-} as const);
-
-type SizedBoolOpts = Opts<{
-  size:       NumberSize, //default 1
+const boolConversion = <R extends NumType>(
+  carrier:    NumCarrier,
   permissive: boolean,
-  endianness: Endianness,
-}>;
-type BitsBoolOpts = Opts<{
-  bits:       NumberBits, //default 1
-  permissive: boolean,
-}>;
+): Conversion<R, boolean> => {
+  const bits = numBitWidth(carrier);
+  const [zero, one] = [numBitsToPrimitive(0n, bits), numBitsToPrimitive(1n, bits)] as [R, R];
+  checkInDomain(one, bits, carrier.binary === "int", "Bool value");
+  return {
+    to: encoded => {
+      if (encoded === zero)
+        return false;
 
-type BoolConversion = ReturnType<typeof boolConversion>;
-type SizedBoolItemOpts<O> = Omit<WidthOpts<O, "size">, "permissive">;
+      if (permissive || encoded === one)
+        return true;
+
+      throw new Error(`Invalid bool value: ${encoded}`);
+    },
+    from: value => value ? one : zero,
+  };
+};
+
+type BitsBoolOpts = NotAnItem & Opts<{ bits: number /*default 1*/ }> & PermissiveOpts;
 
 export const boolItem = Object.assign(
-  <const O extends NumberSize | SizedBoolOpts = {}>(...[sizeOrOpts]: OptionalArg<O>):
-    Merge<CustomUintBase<SizedBoolItemOpts<O>, BoolConversion>, SizedBoolItemOpts<O>> => {
-    //permissive picks the conversion; it is not an item property and must stay out of the spread
-    const { permissive, ...itemOpts } = widthOpts("size", sizeOrOpts) as SizedBoolOpts;
-    return customUint(itemOpts as SizedBoolItemOpts<O>, boolConversion(permissive ?? false));
+  <const O extends number | NumCarrier | CarrierOpts & PermissiveOpts = {}>(
+    ...[carrierOrOpts]: OptionalArg<O>
+  ): Converted<SizedCarrier<O>, boolean> => {
+    const { carrier, permissive } = sizedCarrier(carrierOrOpts);
+    return converted(carrier, boolConversion(carrier, permissive));
   },
-  {
-    bits: <const O extends NumberBits | BitsBoolOpts = {}>(
+  { bits: <const O extends number | BitsBoolOpts = {}>(
       ...[bitsOrOpts]: OptionalArg<O>
-    ) => {
+    ): Converted<BitsCarrier<WidthOf<O, "bits">>, boolean> => {
       const { bits, permissive } = widthOpts("bits", bitsOrOpts) as BitsBoolOpts;
-      return customUintBits(
-        widthOf<O, "bits", NumberBits>(bits),
-        boolConversion(permissive ?? false),
-      );
+      const carrier: BitsCarrier<WidthOf<O, "bits">> =
+        { binary: "uint", bits: widthOf<O, "bits">(bits) };
+      return converted(carrier, boolConversion(carrier, permissive ?? false));
     },
   },
 );
 
 // ---- enum ----
 
-type EnumEntries = RoArray<RoPair<string, number>>;
-type EnumOpts = Opts<{
-  size:       NumberSize, //default 1
-  endianness: Endianness,
-}>;
+type EnumEntries<R extends NumType = NumType> = RoArray<RoPair<string, RawSpec<R>>>;
 
-const enumConversion = <const E extends EnumEntries>(entries: E) => {
-  //a repeated name or value makes the mapping non-injective, so a value that serializes fine
-  //  deserializes back as a different one - the silent round-trip break
-  //  checkVariantReachability rejects for switch variants
-  const [names, values] = zip(entries as EnumEntries);
-  assertDistinct(...names);
-  assertDistinct(...values);
-  const valueToName = Object.fromEntries(entries.map(([name, value]) => [value, name]));
-  const nameToValue = Object.fromEntries(entries);
+const enumConversion = <R extends NumType, const E extends EnumEntries<R>>(
+  carrier: NumCarrier,
+  entries: E,
+): Conversion<R, E[number][0]> => {
+  const mapping = resolveMapping<string, R>(carrier, entries, "Enum value");
+  const valueToName = new Map<NumType, string>(mapping.map(([name, value]) => [value, name]));
+  const nameToValue = new Map<string, R>(mapping);
   return {
-    to: (encoded: number): E[number][0] => {
-      const name = valueToName[encoded];
+    to: encoded => {
+      const name = valueToName.get(encoded);
       if (name === undefined)
         throw new Error(`Invalid enum value: ${encoded}`);
 
       return name;
     },
-    from: (name: E[number][0]): number => {
-      const value = nameToValue[name];
+    from: name => {
+      const value = nameToValue.get(name);
       if (value === undefined)
         throw new Error(`Invalid enum name: ${name}`);
 
       return value;
     },
-  } as const;
+  };
 };
 
-type EnumConversion<E extends EnumEntries> = ReturnType<typeof enumConversion<E>>;
+type EnumItem<E extends EnumEntries, C extends NumCarrier> = Converted<C, E[number][0]>;
 
 export const enumItem = Object.assign(
-  <const E extends EnumEntries, const O extends NumberSize | EnumOpts = {}>(
-    entries:         E,
-    ...[sizeOrOpts]: OptionalArg<O>
-  ): Merge<CustomUintBase<WidthOpts<O, "size">, EnumConversion<E>>, WidthOpts<O, "size">> =>
-    customUint(widthOpts("size", sizeOrOpts), enumConversion(entries)),
-  {
-    //the width is required: unlike bool's single bit, no default is natural for an enum
-    bits: <const E extends EnumEntries, B extends NumberBits>(entries: E, bits: B) =>
-      customUintBits(bits, enumConversion(entries)),
+  < const E extends EnumEntries<CarrierRaw<SizedCarrier<O>>>,
+    const O extends number | NumCarrier | CarrierOpts = {},
+  >(entries: E, ...[carrierOrOpts]: OptionalArg<O>): EnumItem<E, SizedCarrier<O>> => {
+    const { carrier } = sizedCarrier(carrierOrOpts);
+    return converted(carrier, enumConversion(carrier, entries));
+  },
+  { bits: //the width is required: unlike bool's single bit, no default is natural for an enum
+    < const E extends EnumEntries<CarrierRaw<BitsCarrier<B>>>,
+            B extends number,
+    >(entries: E, bits: B): EnumItem<E, BitsCarrier<B>> => {
+      const carrier: BitsCarrier<B> = { binary: "uint", bits };
+      return converted(carrier, enumConversion(carrier, entries));
+    },
+  },
+);
+
+// ---- niche ----
+
+//non-numeric primitives, so that none collides with a passed-through integer and a Map matches
+//  each by value
+export type NicheValue = string | boolean | symbol | null | undefined;
+type Niches<R extends NumType = NumType> = RoArray<RoPair<NicheValue, RawSpec<R>>>;
+
+const nicheConversion = <R extends NumType, const N extends Niches<R>>(
+  carrier: NumCarrier,
+  niches:  N,
+): Conversion<R, R | N[number][0]> => {
+  const mapping = resolveMapping<NicheValue, R>(carrier, niches, "Niche");
+  const rawToValue = new Map<NumType, NicheValue>(mapping.map(([value, raw]) => [raw, value]));
+  const valueToRaw = new Map<NicheValue, R>(mapping);
+  return {
+    to: raw => rawToValue.has(raw) ? rawToValue.get(raw) as N[number][0] : raw,
+    from: value => {
+      if (typeof value === "number" || typeof value === "bigint") {
+        //it would serialize fine and read back as its niche
+        if (rawToValue.has(value))
+          throw new Error(`${value} is the niche of ${String(rawToValue.get(value))}`);
+
+        return value as R;
+      }
+      const raw = valueToRaw.get(value);
+      if (raw === undefined)
+        throw new Error(`Invalid niche: ${String(value)}`);
+
+      return raw;
+    },
+  };
+};
+
+type NicheItem<N extends Niches, C extends NumCarrier> =
+  Converted<C, CarrierRaw<C> | N[number][0]>;
+
+export const nicheItem = Object.assign(
+  < const N extends Niches<CarrierRaw<SizedCarrier<O>>>,
+    const O extends number | NumCarrier | CarrierOpts = {},
+  >(niches: N, ...[carrierOrOpts]: OptionalArg<O>): NicheItem<N, SizedCarrier<O>> => {
+    const { carrier } = sizedCarrier(carrierOrOpts);
+    return converted(carrier, nicheConversion(carrier, niches));
+  },
+  { bits:
+    < const N extends Niches<CarrierRaw<BitsCarrier<B>>>,
+            B extends number,
+    >(niches: N, bits: B): NicheItem<N, BitsCarrier<B>> => {
+      const carrier: BitsCarrier<B> = { binary: "uint", bits };
+      return converted(carrier, nicheConversion(carrier, niches));
+    },
   },
 );
 
 // ---- option ----
 
-const baseOptionItem = <const T extends CustomizableBytes>(someValue: T) => ({
+//the tag's slot is a carrier slot without its item forms, so SizedCarrier resolves to SlotUint
+type TagOpts = NotAnItem & SlotUintOpts<NumberSize>;
+
+//spelled out rather than inferred, so it prints by name - see DeclarationEmit.md
+type OptionSwitch<T extends CustomizableBytes, A extends Struct, I extends IdItem> = {
+  readonly binary:   "switch",
+  readonly id:       I,
+  readonly tag:      "isSome",
+  readonly variants: readonly [
+    NamedSwitchVariant<0, false, A                              >,
+    NamedSwitchVariant<1, true,  { readonly value: SomeBody<T> }>,
+  ],
+};
+type SomeBody   <T extends CustomizableBytes> = CustomizableBytesReturn<{}, T>;
+type OptionValue<T extends CustomizableBytes> = DeriveType<SomeBody<T>>;
+
+type ConvertedOption<T extends CustomizableBytes, A extends Struct, I extends IdItem> =
+  OptionSwitch<T, A, I> & {
+    readonly custom: Conversion<DeriveType<OptionSwitch<T, A, I>>, OptionValue<T> | undefined>,
+  };
+
+type DefaultOptionOpts = TagOpts & PermissiveOpts;
+
+//permissive, any bytes of the default's size are read and discarded, and the default written;
+//  strict, the body must be the default's encoding
+type AbsentItem<P extends boolean | undefined> = BytesBase & Readonly<
+  P extends true
+  ? { size: number, custom: Conversion<RoUint8Array, undefined> }
+  : { fixed: RoUint8Array }
+>;
+//a permissive that may be either yields either body
+type AbsentBody<P extends boolean | undefined> =
+  P extends unknown ? { readonly value: AbsentItem<P> } : never;
+
+export interface OptionItem<
+  T extends CustomizableBytes,
+  O extends NumberSize | TagOpts = {},
+> extends ConvertedOption<T, {}, SlotUint<O>> {}
+
+export interface DefaultOptionItem<
+  T extends CustomizableBytes,
+  O extends NumberSize | DefaultOptionOpts = {},
+> extends ConvertedOption<T, AbsentBody<Get<O, "permissive">>, SlotUint<O>> {}
+
+const convertedOption = <T extends CustomizableBytes, A extends Struct, I extends IdItem>(
+  someValue: T,
+  absent:    A,
+  id:        I,
+): ConvertedOption<T, A, I> => ({
   binary:   "switch",
-  id:       { binary: "uint", size: 1 },
+  id,
   tag:      "isSome",
-  variants: [ { id: 0, as: false, layout: {}                                          },
+  variants: [ { id: 0, as: false, layout: absent                                      },
               { id: 1, as: true,  layout: { value: customizableBytes({}, someValue) } },
             ],
-} as const);
-
-type BaseOption<T extends CustomizableBytes> =
-  DeriveType<ReturnType<typeof baseOptionItem<T>>>;
-
-type BaseOptionValue<T extends CustomizableBytes> =
-  DeriveType<CustomizableBytesReturn<{}, T>> | undefined;
-
-//`undefined` is the absence, so a payload must not surface it: an option of an option collapses
-//  Some(None) into None
-export const optionItem = <const T extends CustomizableBytes>(someValue: T) => ({
-  ...baseOptionItem(someValue),
   custom: {
-    to: (opt: BaseOption<T>): BaseOptionValue<T> =>
-      opt.isSome === true
+    to: opt =>
+      opt["isSome"] === true
       //the generic union does not narrow on its discriminant while T is open
-      ? (opt as Exclude<typeof opt, { isSome: false }>)["value"] as BaseOptionValue<T>
+      ? (opt as Exclude<typeof opt, { isSome: false }>)["value"] as OptionValue<T>
       : undefined,
-    from: (value: BaseOptionValue<T>): BaseOption<T> =>
-      value === undefined
-      ? { isSome: false }
-      : { isSome: true, value } as any, //good luck narrowing this type
-  } satisfies Conversion<BaseOption<T>, BaseOptionValue<T>>
-} as const);
+    from: value =>
+      //a permissive absent body is a field and needs its key; a strict one ignores it
+      ( { isSome: value !== undefined, value } ) as any, //good luck narrowing this type
+  },
+});
+
+export const optionItem = <
+  const T extends CustomizableBytes,
+  const O extends NumberSize | TagOpts = {},
+>(someValue: T, ...[tagSizeOrOpts]: OptionalArg<O>): OptionItem<T, O> =>
+  convertedOption(someValue, {}, sizedCarrier(tagSizeOrOpts).carrier as SlotUint<O>);
+
+export const defaultOptionItem = <
+  const T extends CustomizableBytes,
+  const O extends NumberSize | DefaultOptionOpts = {},
+>(
+  someValue:          T,
+  defaultValue:       OptionValue<T>,
+  ...[tagSizeOrOpts]: OptionalArg<O>
+): DefaultOptionItem<T, O> => {
+  const fixed = serialize(customizableBytes({}, someValue) as Layout, defaultValue as any);
+  const { carrier: tag, permissive } = sizedCarrier(tagSizeOrOpts);
+  const value: AbsentItem<boolean> =
+    permissive
+    ? { binary: "bytes", size: fixed.length, custom: { to: () => undefined, from: () => fixed } }
+    : { binary: "bytes", fixed };
+  return convertedOption(
+    someValue,
+    { value } as AbsentBody<Get<O, "permissive">>,
+    tag as SlotUint<O>,
+  );
+};
 
 // ---- brand ----
 

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { constMap } from "../src/constMap.js";
+import { constMap, mappingRows } from "../src/constMap.js";
 import { pinEq } from "./typeAssert.js";
 
 const sample = [[
@@ -45,6 +45,26 @@ describe("constMap default shape", () => {
   it("explicit default shapes match the implicit one", () => {
     for (const shape of [[[0, 1], 2], [[0, 1], [2]]] as const)
       assert.equal(constMap(sample, shape)("Testnet", "Sepolia"), 11155111n);
+  });
+});
+
+describe("mappingRows", () => {
+  it("expands the spec into the row list it denotes", () => {
+    const rows = mappingRows(sample);
+    pinEq<typeof rows, [
+      ["Mainnet", "Ethereum",       1n],
+      ["Mainnet", "Bsc",           56n],
+      ["Mainnet", "Polygon",      137n],
+      ["Testnet", "Ethereum",       5n],
+      ["Testnet", "Sepolia", 11155111n],
+    ]>(true);
+    assert.deepEqual(rows, [
+      ["Mainnet", "Ethereum",       1n],
+      ["Mainnet", "Bsc",           56n],
+      ["Mainnet", "Polygon",      137n],
+      ["Testnet", "Ethereum",       5n],
+      ["Testnet", "Sepolia", 11155111n],
+    ]);
   });
 });
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { Abi, Address } from "viem";
 import { encodeFunctionData, parseAbi } from "viem";
 import { type RoArray, hex } from "@onrail-xyz/utils";
-import { abiParam, uint256Item, addressItem, trailingBytesParam } from "../src/layouting.js";
+import { abiParam, uint256Item, addressItem, bytesParam } from "../src/layouting.js";
 import { abiFunction, contractFromSpec } from "../src/client.js";
 
 const uint32Item  = { binary: "uint",  size:  4 } as const;
@@ -21,13 +21,13 @@ const burnToken            = abiParam("burnToken",            "address", address
 const spec = [
   abiFunction("sendMessage",
     [destinationDomain, recipient, destinationCaller, minFinalityThreshold,
-     trailingBytesParam("messageBody")],
+     bytesParam("messageBody")],
     (destinationDomain, recipient, destinationCaller, minFinalityThreshold, messageBody) =>
       ({ destinationDomain, recipient, destinationCaller, minFinalityThreshold, messageBody })),
 
   abiFunction("depositForBurnWithHook",
     [amount, destinationDomain, mintRecipient, burnToken, destinationCaller, maxFee,
-     minFinalityThreshold, trailingBytesParam("hookData")],
+     minFinalityThreshold, bytesParam("hookData")],
     (amount, destinationDomain, mintRecipient, burnToken, destinationCaller, maxFee,
      minFinalityThreshold, hookData) =>
       ({ amount, destinationDomain, mintRecipient, burnToken, destinationCaller, maxFee,
@@ -42,7 +42,7 @@ const hook = { recipient: bytes32Item, fee: uint256Item } as const;
 const typedSpec = [
   abiFunction("sendMessage",
     [destinationDomain, recipient, destinationCaller, minFinalityThreshold,
-     trailingBytesParam("messageBody", hook)],
+     bytesParam("messageBody", { layout: hook })],
     (destinationDomain, recipient, destinationCaller, minFinalityThreshold, messageBody) =>
       ({ destinationDomain, recipient, destinationCaller, minFinalityThreshold, messageBody })),
 ] as const;
@@ -59,11 +59,6 @@ const cctpAbi: Abi = parseAbi([
 const b32 = (n: number) => new Uint8Array(32).fill(n);
 const viemHex = (functionName: string, args: RoArray) =>
   encodeFunctionData({ abi: cctpAbi, functionName, args: args as never[] });
-
-const badSpec = [
-  abiFunction("bad", [trailingBytesParam("data"), abiParam("to", "address", addressItem)],
-    (data, to) => ({ data, to })),
-] as const;
 
 describe("CCTP: a trailing bytes parameter", () => {
   for (const size of [0, 1, 31, 32, 33, 96])
@@ -102,13 +97,6 @@ describe("CCTP: a trailing bytes parameter", () => {
       viemHex("sendMessage",
         [7, hex.encode(b32(0xaa), true), hex.encode(b32(0xbb), true), 1000,
          hex.encode(payload, true)]),
-    );
-  });
-
-  it("rejects a dynamic parameter that is not last", () => {
-    assert.throws(
-      () => contractFromSpec(messenger, badSpec),
-      /must be the only one, and come last/,
     );
   });
 });

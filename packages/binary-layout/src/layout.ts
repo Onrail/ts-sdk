@@ -62,11 +62,14 @@ export type Conversion<FromType = Existential, ToType = Existential> = {
 //  F would reject legal layouts (a bytes-with-layout over a scalar-deriving sub-layout) and
 //  `Conversion<unknown>` would reject every real conversion (contravariance) - factories and
 //  DeriveType carry the precision
+export type Surfacing<F = unknown, C extends Conversion = Conversion> =
+  Opts<{ fixed: F, as: unknown, custom: C }>;
+
 export interface ItemBase<
   BL extends BinaryLiteral,
   F,
   C  extends Conversion = Conversion,
-> extends Opts<{ fixed: F, as: unknown, custom: C }> {
+> extends Surfacing<F, C> {
   readonly binary: BL,
 }
 
@@ -191,7 +194,7 @@ export type Layout = Item | Struct;
 
 type NumericKeys<S> = Extract<keyof S, number | `${number}`>;
 
-type _Has<I, K extends "fixed" | "as" | "custom"> = Not<AllExtend<Get<I, K>, undefined>>;
+type _Has<I, K extends keyof Surfacing> = Not<AllExtend<Get<I, K>, undefined>>;
 export type HasFixed <I> = _Has<I, "fixed" >;
 export type HasAs    <I> = _Has<I, "as"    >;
 export type HasCustom<I> = _Has<I, "custom">;

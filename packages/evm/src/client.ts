@@ -2,18 +2,12 @@ import type { Address, AccessList, Hex } from "viem";
 import type { RoUint8Array, RoArray, RoTuple, Function, OptionalArg } from "@onrail-xyz/utils";
 import { hex, argOf } from "@onrail-xyz/utils";
 import type { Layout, Struct } from "@onrail-xyz/binary-layout";
-import { serialize, isItem, isOmitted, calcStaticSize } from "@onrail-xyz/binary-layout";
+import { serialize, isItem, isOmitted } from "@onrail-xyz/binary-layout";
 import type { KindWithAtomic } from "@onrail-xyz/amount";
 import { type AmountOrAtomic, toAtomicIfAmount } from "@onrail-xyz/common";
-import type { AbiParam, AbiParamValue, DynamicAbiParam, PaddedSlotLayout } from "./layouting.js";
-import { wordSize, selectorLayout,
-         paddedSlotLayout, abiEncodedBytesItem, signatureOf } from "./layouting.js";
+import type { AbiParam, AbiParamValue, ParamsLayout } from "./layouting.js";
+import { selectorLayout, signatureOf, paramsLayout } from "./layouting.js";
 import type { QueryLayoutTriple } from "./query.js";
-
-//the marker `trailingBytesParam` sets, read only here - nothing outside the spec builder asks
-//  whether a param is the dynamic one
-const isDynamicParam = (param: AbiParam): param is DynamicAbiParam<string, Layout | undefined> =>
-  "dynamic" in param;
 
 //the default spans the whole domain, so the bare `ContractTx` takes an amount of any kind
 export type ContractTx<K extends KindWithAtomic | undefined = KindWithAtomic | undefined> = {
@@ -45,27 +39,14 @@ export const toViemTx = (tx: ContractTx): ViemTx => ({
 
 // ---- Contract spec builder ----
 // A spec is a tuple of `abiFunction` rows, [name, params, composer, outputLayout | undefined]. The
-//   signature and the input layout - each param left-padded onto its ABI slot - derive from the
-//   params; the composer turns positional args into the params object, which methods also accept
-//   directly, and exists for the parameter names, which nothing else can carry.
+//   signature and the input layout (`paramsLayout`) derive from the params; the composer turns
+//   positional args into the params object, which methods also accept directly, and exists for
+//   the parameter names, which nothing else can carry.
 // Solidity overloads share an ABI name, so a row whose method key must differ from it names
 //   both, key first: `["safeTransferFromWithData", "safeTransferFrom"]`.
 // Read calls (outputLayout defined) return a layout triple for the query system.
 // Write calls (outputLayout undefined) return pre-serialized call data; who sends it is the
 //   transaction's business, not the spec's.
-// Every param is static but for a trailing `trailingBytesParam`, whose offset the parameter
-//   count fixes; two dynamic params would need offsets computed from the tails ahead of them,
-//   which is an encoding pass rather than a layout.
-
-export type ParamsStruct<P extends RoTuple<AbiParam>> =
-  { readonly [E in P[number] as E["name"]]: E["item"] };
-
-//each param's field of the call's layout: static ones left-padded onto their slot, a trailing
-//  dynamic one already ABI-shaped (offset, length, payload, padding)
-export type ParamsLayout<P extends RoTuple<AbiParam>> = {
-  readonly [E in P[number] as E["name"]]:
-    E extends { readonly dynamic: object } ? E["item"] : PaddedSlotLayout<E["item"]>;
-};
 
 //the params' values, positionally and by name
 type ParamValues<P extends RoTuple<AbiParam>> =
@@ -158,24 +139,7 @@ export const contractFromSpec = <const S extends ContractSpec>(
   for (const [name, params, composer, outputLayout] of spec) {
     const [key, abiName] = typeof name === "string" ? [name, name] : name;
     const sig = signatureOf(abiName, params);
-    const dynamicIndex = params.findIndex(isDynamicParam);
-    //a second dynamic param cannot be last either, so the one check covers both
-    if (dynamicIndex >= 0 && dynamicIndex !== params.length - 1)
-      throw new Error(`${sig}: a dynamic parameter must be the only one, and come last`);
-
-    //the dynamic payload follows the whole head, which is not one word per preceding param:
-    //  a static tuple param spans as many slots as it has members
-    const staticFields = params.filter(param => !isDynamicParam(param))
-      .map(param => paddedSlotLayout(param.item));
-    const headSize = staticFields.reduce((sum, field) => sum + calcStaticSize(field)!, wordSize);
-
-    let staticIndex = 0;
-    const inputLayout = Object.fromEntries(params.map(param => [
-      param.name,
-      isDynamicParam(param)
-      ? abiEncodedBytesItem({ layout: param.dynamic.layout, offset: headSize })
-      : staticFields[staticIndex++]!,
-    ]));
+    const inputLayout = paramsLayout(params);
     const layout = selectorLayout(sig)(inputLayout);
 
     const method = (...args: any[]) => ({

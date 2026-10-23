@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import type { Abi, Address } from "viem";
 import { encodeFunctionData, parseAbi, toFunctionSelector } from "viem";
 import { hex } from "@onrail-xyz/utils";
-import { abiParam, uint256Item, selectorOf,
-         paddedSlotLayout, trailingBytesParam } from "../src/layouting.js";
+import { abiParam, uint256Item,
+         selectorOf, paddedSlotLayout, bytesParam } from "../src/layouting.js";
 import { abiFunction, contractFromSpec } from "../src/client.js";
 
 const int24Item  = { binary: "int",  size: 3  } as const;
@@ -40,13 +40,13 @@ const swapParams = abiParam("params", SWAPP, { binary: "bytes", layout: {
 const spec = [
   abiFunction("initialize", [key, abiParam("sqrtPriceX96", "uint160", uint160Item)],
     (key, sqrtPriceX96) => ({ key, sqrtPriceX96 })),
-  abiFunction("modifyLiquidity", [key, modParams, trailingBytesParam("hookData")],
+  abiFunction("modifyLiquidity", [key, modParams, bytesParam("hookData")],
     (key, params, hookData) => ({ key, params, hookData })),
-  abiFunction("swap", [key, swapParams, trailingBytesParam("hookData")],
+  abiFunction("swap", [key, swapParams, bytesParam("hookData")],
     (key, params, hookData) => ({ key, params, hookData })),
   abiFunction("donate",
     [key, abiParam("amount0", "uint256", uint256Item), abiParam("amount1", "uint256", uint256Item),
-     trailingBytesParam("hookData")],
+     bytesParam("hookData")],
     (key, amount0, amount1, hookData) => ({ key, amount0, amount1, hookData })),
 ] as const;
 

@@ -7,6 +7,7 @@ import { kind, getDecimals, identifyKind } from "../src/kind.js";
 import { Rational, tenToThe } from "../src/rational.js";
 import { Rate, isRate, invert } from "../src/rate.js";
 import { inUnit } from "../src/format.js";
+import { typeOnly } from "./typeAssert.js";
 
 const ETH = kind(
   "ETH",
@@ -1340,7 +1341,7 @@ describe("kind validation", () => {
   it("isOfKind takes only a kind the union spells", () => {
     const picked = Amount.parse("1.5 ETH", ETH, USD);
     // @ts-expect-error | a kind the union does not spell
-    Amount.isOfKind(picked, Duration);
+    typeOnly(() => Amount.isOfKind(picked, Duration));
     assert.strictEqual(Amount.isOfKind(picked, USD), false);
   });
 
@@ -1429,13 +1430,10 @@ describe("Multi-system kinds", () => {
 
   it("precision-as-symbol rejects non-oom symbols at type level", () => {
     const len = Amount.from(1, Length, "m");
-    // Type-level verification only - never executed at runtime
-    if (false as boolean) {
-      // @ts-expect-error - "in" is not an oom symbol (imperial is non-decimal)
-      len.toString("inUnit", "m", { precision: "in" });
-      // @ts-expect-error - "ft" is non-decimal, so NO symbol precision allowed
-      len.toString("inUnit", "ft", { precision: "cm" });
-    }
+    // @ts-expect-error - "in" is not an oom symbol (imperial is non-decimal)
+    typeOnly(() => len.toString("inUnit", "m", { precision: "in" }));
+    // @ts-expect-error - "ft" is non-decimal, so NO symbol precision allowed
+    typeOnly(() => len.toString("inUnit", "ft", { precision: "cm" }));
   });
 
   it("formats using (default) metric system", () => {
@@ -1480,17 +1478,14 @@ describe("Multi-system kinds", () => {
   });
 
   it("rejects non-primary system without scale/oom at type level", () => {
-    // Type-level verification only - no runtime check needed
-    if (false as boolean) {
-      kind(
-        "BadKind",
-        // @ts-expect-error - only the first system can omit oom/scale
-        [
-          ["primary", [{ symbols: [{ symbol: "X" }] }]],
-          ["secondary", [{ symbols: [{ symbol: "Y" }] }]],
-        ],
-      );
-    }
+    typeOnly(() => kind(
+      "BadKind",
+      // @ts-expect-error - only the first system can omit oom/scale
+      [
+        ["primary", [{ symbols: [{ symbol: "X" }] }]],
+        ["secondary", [{ symbols: [{ symbol: "Y" }] }]],
+      ],
+    ));
   });
 });
 

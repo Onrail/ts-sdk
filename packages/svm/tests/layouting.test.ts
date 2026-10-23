@@ -4,12 +4,11 @@ import type { Address } from "@solana/kit";
 import { base64 } from "@onrail-xyz/utils";
 import { serialize, deserialize } from "@onrail-xyz/binary-layout";
 import { base58 } from "../src/encoding.js";
-import { mintAccountLayout, tokenAccountLayout,
-         durableNonceAccountLayout, addressLookupTableLayout,
-         accountLayout, instructionLayout, eventLayout,
-         discriminatorOf, addressItem, bumpItem,
-         u64Item, vecBytesItem, vecArrayItem,
-         cOptionItem, defaultOptionItem, cEnumItem, littleEndian } from "../src/index.js";
+import { mintAccountLayout,
+         tokenAccountLayout, durableNonceAccountLayout,
+         addressLookupTableLayout, accountLayout, instructionLayout,
+         eventLayout, discriminatorOf, addressItem, bumpItem, u64Item,
+         vecBytesItem, vecArrayItem, cOptionItem, cEnumItem, littleEndian } from "../src/index.js";
 
 //fixtures captured from mainnet at slot ~437047333 (2026-08-03); expected values come from the
 //  RPC's own jsonParsed responses for the same data, i.e. Solana's account parsers are the oracle
@@ -205,12 +204,12 @@ describe("layout items", () => {
     assert.strictEqual(deserialize(item, serialize(item, 7n)), 7n);
   });
 
-  it("defaultOptionItem takes the tag width and the absent body's value", () => {
-    //the 1-byte tag of the bincode-encoded lookup table
-    const item = defaultOptionItem(u64Item, 0xffn, 1);
-    assert.deepStrictEqual(serialize(item, undefined), Uint8Array.from([0, 0xff, 0, 0, 0, 0, 0, 0, 0]));
-    assert.strictEqual(deserialize(item, serialize(item, undefined)), undefined);
-    assert.strictEqual(deserialize(item, serialize(item, 7n)), 7n);
+  it("cOptionItem reads a cleared field's stale body as absent and writes zeros", () => {
+    //spl-token's pack_coption_* write only the tag on None
+    const item = cOptionItem(u64Item);
+    const stale = Uint8Array.from([0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+    assert.strictEqual(deserialize(item, stale), undefined);
+    assert.deepStrictEqual(serialize(item, undefined), new Uint8Array(12));
   });
 
   it("cOptionItem requires a body of static size", () => {

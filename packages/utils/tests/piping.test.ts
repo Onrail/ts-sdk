@@ -4,7 +4,7 @@ import { pipe, identity, raise, tap, tryOr, map, fallback, ensure,
          forbid, and, or, not, isUndefined, isNullish, isDefined,
          exists, succeeds, throws, throwOnUndefined, throwOnNullish } from "../src/piping.js";
 import type { Nullish } from "../src/typing.js";
-import { pinEq } from "./typeAssert.js";
+import { pinEq, typeOnly } from "./typeAssert.js";
 
 // ---------------------------------------------------------------------------
 // Type-level helpers
@@ -45,9 +45,9 @@ describe("pipe", () => {
 
   it("should reject non-composable chains", () => {
     // @ts-expect-error - a boolean consumer cannot follow a string producer
-    pipe((n: number) => String(n), (b: boolean) => b ? 1 : 2);
+    typeOnly(() => pipe((n: number) => String(n), (b: boolean) => b ? 1 : 2));
     // @ts-expect-error - at least one function is required
-    pipe();
+    typeOnly(() => pipe());
   });
 });
 

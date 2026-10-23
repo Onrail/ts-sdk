@@ -124,6 +124,11 @@ export type Widen<T> =
   T extends object  ? object  :
   T;
 
+//distributes over C: boolean yields T | F, never yields never. Both arms are type arguments and
+//  so get instantiated before C picks one: a guard whose untaken arm must stay unevaluated
+//  (recursion, a too-deep instantiation) needs the native conditional
+//used for genuine conditions on booleans, because it is more expressive than `extend` which
+//  is also just used to narrow, or for `infer`ing things, besides also branching on conditions
 export type If<C extends boolean, T, F> = C extends true ? T : F;
 
 export type Extends<T, U> = T extends U ? true : false;
@@ -171,8 +176,10 @@ type IsNonUnionLiteral<T> =
   : Extends<T, null | undefined>;
 
 //whether T is a single primitive value: a string, number, bigint or boolean literal, a unique
-//  symbol, null or undefined. For such a type, and only such a type, "same type" means "same value"
-export type IsLiteral<T> = If<Or<IsNever<T>, IsUnion<T>>, false, IsNonUnionLiteral<T>>;
+//  symbol, null or undefined. For such a type, and only such a type, "same type" means "same value".
+//  any is not one: it might hold a literal, but none can be recovered from it
+export type IsLiteral<T> =
+  If<Or<[IsAny<T>, IsNever<T>, IsUnion<T>]>, false, IsNonUnionLiteral<T>>;
 
 export type IsInteger<N extends number> = Extends<`${N}`, `${bigint}`>;
 

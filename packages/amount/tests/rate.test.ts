@@ -4,6 +4,7 @@ import { Rate, invert, numKindOf, denKindOf } from "../src/rate.js";
 import { Amount, scalar } from "../src/amount.js";
 import { type Kind, kind } from "../src/kind.js";
 import { Rational, tenToThe } from "../src/rational.js";
+import { typeOnly } from "./typeAssert.js";
 
 const Percentage = scalar(kind(
   "Percentage",
@@ -411,7 +412,7 @@ describe("Rate", () => {
       const conv = Rate.from(50_000, USD, BTC) as Rate<typeof USD | typeof ETH, typeof BTC>;
       assert.strictEqual(Rate.hasNum(conv, ETH), false);
       // @ts-expect-error | a kind the union does not spell on that side
-      Rate.hasNum(conv, BTC);
+      typeOnly(() => Rate.hasNum(conv, BTC));
     });
   });
 
@@ -536,13 +537,10 @@ describe("Rate", () => {
 
     it("rejects non-oom precision symbols at type level", () => {
       const conv = Rate.from(100, Length, USD);
-      // Type-level verification only - never executed at runtime
-      if (false as boolean) {
-        // @ts-expect-error - "in" is not an oom symbol (imperial is non-decimal)
-        conv.toString({ numSymbol: "m", precision: "in" });
-        // @ts-expect-error - "ft" is non-decimal, so NO symbol precision allowed
-        conv.toString({ numSymbol: "ft", precision: "cm" });
-      }
+      // @ts-expect-error - "in" is not an oom symbol (imperial is non-decimal)
+      typeOnly(() => conv.toString({ numSymbol: "m", precision: "in" }));
+      // @ts-expect-error - "ft" is non-decimal, so NO symbol precision allowed
+      typeOnly(() => conv.toString({ numSymbol: "ft", precision: "cm" }));
     });
   });
 });

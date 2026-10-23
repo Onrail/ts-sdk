@@ -1,4 +1,4 @@
-import type { RoPair, Opts, OptionalArg, OmitUndefined } from "@onrail-xyz/utils";
+import type { RoPair, Opts, OptionalArg, OmitUndefined, GetOpt } from "@onrail-xyz/utils";
 import { msPerSecond, dateRangeMs, omitUndefined } from "@onrail-xyz/utils";
 import type { Conversion, Endianness, NumSizeToPrimitive } from "./layout.js";
 import { numberMaxSize, bitsPerByte } from "./layout.js";
@@ -9,29 +9,30 @@ export type TimeUnit = "s" | "ms";
 const defaultSize = 4;
 
 //origin: the instant the encoded count is measured from - unix epoch by default
-//saturateAs: sentinel in place of out-of-range throws - too-late times encode to the field's
-//  max, while max itself and counts beyond Date's range decode to the sentinel - on the wire,
-//  max and the sentinel are synonyms. It is unconstrained; even a Date works (sentinels match
-//  by value, so its instant is reserved) and keeps the decoded type union-free.
+//saturateAs: sentinel in place of out-of-range throws - too-late times encode to the ceiling,
+//  while the ceiling, every count above it and counts beyond Date's range decode to the
+//  sentinel - on the wire, they are all synonyms. It is unconstrained; even a Date works
+//  (sentinels match by value, so its instant is reserved) and keeps the decoded type union-free.
+//saturateFrom: the ceiling, the field's max by default
 //the options take the Opts convention (an explicit undefined reads as unset) except saturateAs,
 //  for which undefined is a legitimate sentinel: its mere presence is what declares one
+type SaturationOpts =
+  | { readonly saturateAs?: never, readonly saturateFrom?: never }
+  | { readonly saturateAs:  unknown } & Opts<{ saturateFrom: number | bigint }>;
+
+type TimestampBaseOpts = Opts<{ unit: TimeUnit, size: number, origin: Date }> & SaturationOpts;
+
 export type TimestampConversionOpts =
-  Opts<{ unit: TimeUnit, size: number, origin: Date }> &
-  Partial<{ saturateAs: unknown }> &
-  { readonly endianness?: never }; //a conversion has no byte order
+  TimestampBaseOpts & { readonly endianness?: never }; //a conversion has no byte order
 
-export type TimestampOpts =
-  Omit<TimestampConversionOpts, "endianness"> & Opts<{ endianness: Endianness }>;
+export type TimestampOpts = TimestampBaseOpts & Opts<{ endianness: Endianness }>;
 
-//the types the options select are read off the whole record, each by its own rule, so that an
-//  option that may be undefined - or absent, when the record's own type declares it optional -
-//  types as either outcome. The record is const, so a string sentinel stays the literal it names
-//  (`Date | "never"`, where a widened `Date | string` would admit every string as a timestamp)
-type OptOf<O, K extends PropertyKey> = K extends keyof O ? O[K] : undefined;
+//the record is const, so a string sentinel stays the literal it names (`Date | "never"`, where a
+//  widened `Date | string` would admit every string as a timestamp)
 type SizeOf<O> =
-  | Exclude<OptOf<O, "size">, undefined>
-  | (undefined extends OptOf<O, "size"> ? typeof defaultSize : never);
-type SentinelOf<O> = "saturateAs" extends keyof O ? O["saturateAs" & keyof O] : never;
+  | Exclude<GetOpt<O, "size">, undefined>
+  | (undefined extends GetOpt<O, "size"> ? typeof defaultSize : never);
+type SentinelOf<O> = GetOpt<O, "saturateAs", never>;
 
 type Timestamp<M> = Date | M;
 
@@ -54,6 +55,9 @@ export const timestampConversion = <const O extends TimestampConversionOpts = {}
   const originMs = BigInt(opts?.origin?.getTime() ?? 0);
   const unitMs   = unit === "s" ? BigInt(msPerSecond) : 1n;
   const max      = (1n << BigInt(size * bitsPerByte)) - 1n;
+  const ceiling  = opts?.saturateFrom === undefined ? max : BigInt(opts.saturateFrom);
+  if (ceiling < 0n || ceiling > max)
+    throw new Error(`saturateFrom ${ceiling} lies outside the uint${size * bitsPerByte} field`);
   //for counts before the origin we have to floor rather than truncate
   const floorDiv = (a: bigint, b: bigint) => {
     const quotient = a / b;
@@ -75,24 +79,24 @@ export const timestampConversion = <const O extends TimestampConversionOpts = {}
     instantOf: (count: D     ) => Date, //origin + count * unit
     asCount:   (value: Raw   ) => D,    //casts between the wire type and the
     asValue:   (count: D     ) => Raw,  //arithmetic domain
-    [max, dateHi]: RoPair<D, D>,
+    [ceiling, dateHi]: RoPair<D, D>,
   ) => {
     //counts that don't fit the wire - negative, NaN, oversized - are serializeNum's to reject
     const saturatedCountOf = (time: Value): D => {
       //the sentinel precedes the Date branch because a sentinel Date is indistinguishable from
       //  an instant, and where the field outranges Date the clamp below would not reach the bound
       if (hasSentinel && isSentinel(time, sentinel))
-        return max;
+        return ceiling;
 
       const count = countOf((time as Date).getTime());
-      return hasSentinel && count > max ? max : count;
+      return hasSentinel && count > ceiling ? ceiling : count;
     };
 
     return {
       to: (value: Raw) => {
         const count = asCount(value);
         const beyondDate = count > dateHi;
-        if (hasSentinel && (count === max || beyondDate))
+        if (hasSentinel && (count >= ceiling || beyondDate))
           return sentinel;
 
         if (beyondDate)
@@ -115,7 +119,7 @@ export const timestampConversion = <const O extends TimestampConversionOpts = {}
       count => new Date(org + count * unt),
       value => value as number,
       count => count as Raw,
-      [Number(max), Number(dateHi)],
+      [Number(ceiling), Number(dateHi)],
     );
   }
 
@@ -124,7 +128,7 @@ export const timestampConversion = <const O extends TimestampConversionOpts = {}
     count => new Date(Number(originMs + count * unitMs)),
     value => BigInt(value),
     count => numSizeToPrimitive(count, size),
-    [max, dateHi],
+    [ceiling, dateHi],
   );
 };
 
@@ -135,7 +139,7 @@ export type TimestampItem<O extends TimestampOpts> = {
   readonly binary: "uint",
   readonly size:   SizeOf<O>,
   readonly custom: TimestampConversion<Omit<O, "endianness">>,
-} & OmitUndefined<{ readonly endianness: OptOf<O, "endianness"> }>;
+} & OmitUndefined<{ readonly endianness: GetOpt<O, "endianness"> }>;
 
 export const timestampItem = <const O extends TimestampOpts = {}>(
   ...[opts]: OptionalArg<O>

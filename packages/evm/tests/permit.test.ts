@@ -14,6 +14,7 @@ import { probeNetwork, query, liveTimeout, token, usdcTreasury } from "./live.js
 const alice = "0x1111111111111111111111111111111111111111" as Address;
 const bob   = "0x2222222222222222222222222222222222222222" as Address;
 
+const maxUint32  = 2n ** 32n - 1n;
 const maxUint256 = 2n ** 256n - 1n;
 const hashStr = (s: string) => keccak256(utf8.encode(s));
 
@@ -80,16 +81,14 @@ describe("permit spec", () => {
 
     //composePermitMsg defaults to an infinite deadline, so the on-chain call must be able to
     //  encode the very value that was signed
-    it("encodes an infinite deadline as max uint256", () => {
+    it("encodes an infinite deadline as max uint32", () => {
       const result = p.permit({ ...params, deadline: "infinity" });
-      assert.strictEqual(deadlineWordOf(result.data), maxUint256);
+      assert.strictEqual(deadlineWordOf(result.data), maxUint32);
     });
 
-    it("decodes max uint256 back into an infinite deadline", () => {
-      assert.strictEqual(
-        deserialize(deadlineItem, bignum.toBytes(maxUint256, wordSize)),
-        "infinity",
-      );
+    it("decodes max uint32 and everything above it into an infinite deadline", () => {
+      for (const word of [maxUint32, maxUint256])
+        assert.strictEqual(deserialize(deadlineItem, bignum.toBytes(word, wordSize)), "infinity");
       const date = new Date("2030-01-01T00:00:00Z");
       assert.deepStrictEqual(
         deserialize(deadlineItem, bignum.toBytes(BigInt(date.getTime() / 1000), wordSize)),
@@ -111,9 +110,9 @@ describe("composePermitMsg", () => {
     assert.throws(() => composePermitMsg(alice, bob, -1n, domain, 0));
   });
 
-  it("defaults the deadline to max uint256", () => {
+  it("defaults the deadline to max uint32", () => {
     const msg = composePermitMsg(alice, bob, 1n, domain, 0);
-    assert.strictEqual(msg.message.deadline, maxUint256);
+    assert.strictEqual(msg.message.deadline, maxUint32);
   });
 
   it("uses the canonical EIP-2612 Permit typehash", () => {

@@ -3,16 +3,21 @@ import assert from "node:assert/strict";
 import type { Hex } from "viem";
 import { encodeAbiParameters, decodeAbiParameters, getAddress,
          parseSignature, serializeCompactSignature, signatureToCompactSignature } from "viem";
+import type { RoUint8Array } from "@onrail-xyz/utils";
 import { utf8, hex, bignum } from "@onrail-xyz/utils";
-import { serialize, deserialize, calcStaticSize, boolItem } from "@onrail-xyz/binary-layout";
+import type { DeriveType } from "@onrail-xyz/binary-layout";
+import { serialize, deserialize,
+         calcStaticSize, boolItem, withCustom, paddingItem } from "@onrail-xyz/binary-layout";
 import { keccak256 } from "../src/hashing.js";
-import { type AbiParamValue, wordSize,
-         selectorLength, selectorOf, paddedSlotLayout,
-         paddedFields, abiEncodedBytesItem, addressItem,
+import { type AbiParamValue, type SigNameOf, wordSize, selectorLength,
+         selectorOf, selectorItem, selectorIdOf, selectorEnumItem,
+         paddedSlotLayout, paddedFields, abiEncodedBytesItem,
+         abiStringItem, abiOffsetItem, abiTailItem, addressItem,
          sigSwitchItem, signatureItem, abiSignatureItem,
-         compactSignatureItem, uint256Item, abiParam,
-         addressParam, amountParam, paramOf,
+         compactSignatureItem, uint256Item, abiParam, addressParam,
+         amountParam, paramOf, stringParam, paramsLayout,
          sigVariant, addressConversion, bytesNItem, mappingSlot } from "../src/layouting.js";
+import { pinEq } from "./typeAssert.js";
 
 describe("abiEncodedBytesItem", () => {
   const item = abiEncodedBytesItem();
@@ -55,6 +60,73 @@ describe("abiEncodedBytesItem", () => {
     assert.deepStrictEqual(serialize(nestedItem, value), viemEncode(serialize(inner, value)));
     assert.deepStrictEqual(deserialize(nestedItem, serialize(nestedItem, value)), value);
   });
+
+  //regression: a union of records was read as a whole, whose keyof drops a key not common to
+  //  all of them, so a payload that may be decoded typed as raw bytes only. Declared types, since
+  //  a union of fresh literals is normalized to carry every key
+  it("types a content layout that may be absent as either payload", () => {
+    const inner = { binary: "uint", size: 1 } as const;
+    const withLayout: { readonly layout: typeof inner } = { layout: inner };
+    const without: {} = {};
+    const opts = (layout: boolean): typeof withLayout | typeof without =>
+      layout ? withLayout : without;
+    const declared: { readonly layout?: typeof inner } = { layout: inner };
+    const fromUnion    = abiEncodedBytesItem(opts(true));
+    const fromOptional = abiEncodedBytesItem(declared);
+    pinEq<DeriveType<typeof fromUnion>,    number | RoUint8Array>(true);
+    pinEq<DeriveType<typeof fromOptional>, number | RoUint8Array>(true);
+    assert.equal(deserialize(fromUnion, serialize(fromUnion, 7)), 7);
+  });
+});
+
+describe("abiStringItem", () => {
+  pinEq<DeriveType<typeof abiStringItem>, string>(true);
+
+  for (const text of ["", "USD Coin", "ü".repeat(20)])
+    it(`serializes ${JSON.stringify(text)} identically to viem's abi.encode, and back`, () => {
+      const encoded = serialize(abiStringItem, text);
+      assert.deepStrictEqual(
+        encoded, hex.decode(encodeAbiParameters([{ type: "string" }], [text])));
+      assert.strictEqual(deserialize(abiStringItem, encoded), text);
+    });
+});
+
+describe("paramsLayout", () => {
+  //an output layout too: a return of several values, one of them dynamic
+  it("places a dynamic param's tail after the head wherever the param sits", () => {
+    const layout = paramsLayout([stringParam("name"), abiParam("count", "uint256", uint256Item)]);
+    const value = { name: "USD Coin", count: 7n };
+    pinEq<DeriveType<typeof layout>, { readonly name: string, readonly count: bigint }>(true);
+    const encoded = hex.decode(
+      encodeAbiParameters([{ type: "string" }, { type: "uint256" }], [value.name, value.count]));
+    assert.deepStrictEqual(serialize(layout, value), encoded);
+    assert.deepStrictEqual(deserialize(layout, encoded), value);
+  });
+
+  //the dynamic marker and the item were two answers to one question: a plain param with a tail
+  //  item got no offset word
+  it("takes any param whose item is a tail as the dynamic one", () => {
+    const layout = paramsLayout([abiParam("data", "bytes", abiTailItem())]);
+    const data = Uint8Array.from([0xc0, 0xff, 0xee]);
+    assert.deepStrictEqual(
+      serialize(layout, { data }),
+      hex.decode(encodeAbiParameters([{ type: "bytes" }], ["0xc0ffee"])),
+    );
+  });
+
+  it("rejects a second dynamic param", () => {
+    assert.throws(
+      () => paramsLayout([stringParam("a"), stringParam("b")]),
+      /b: a param list admits one dynamic parameter only/,
+    );
+  });
+
+  it("rejects a param named like the generated offset word", () => {
+    assert.throws(
+      () => paramsLayout([abiParam("_offset", "uint256", uint256Item), stringParam("note")]),
+      /not distinct: _offset, _offset, note/,
+    );
+  });
 });
 
 describe("paddedSlotLayout", () => {
@@ -64,6 +136,12 @@ describe("paddedSlotLayout", () => {
 
   it("throws on a dynamically sized item", () => {
     assert.throws(() => paddedSlotLayout({ binary: "bytes" }));
+  });
+
+  //a struct field of the generated padding's name was overwritten by it
+  it("rejects a field named like the generated padding", () => {
+    const layout = { _padding: paddingItem(1), flag: { binary: "uint", size: 1 } } as const;
+    assert.throws(() => paddedSlotLayout(layout), /not distinct: _padding, _padding, flag/);
   });
 });
 
@@ -91,6 +169,33 @@ describe("bytesNItem", () => {
   it("rejects widths outside the ABI's", () => {
     assert.throws(() => bytesNItem(0), /not an ABI type/);
     assert.throws(() => bytesNItem(33), /not an ABI type/);
+    //a fractional or NaN width slips past a range check alone
+    assert.throws(() => bytesNItem(4.5), /not an ABI type/);
+    assert.throws(() => bytesNItem(NaN), /not an ABI type/);
+    assert.throws(() => bytesNItem({ binary: "bytes" }), /statically sized/);
+    assert.throws(() => bytesNItem(selectorItem("f()")), /surface a value/);
+  });
+
+  it("takes an item as the bytes' content, an enum over selectors say", () => {
+    const op = bytesNItem(selectorEnumItem(["pause()", "unpause(uint256)"]));
+    pinEq<DeriveType<typeof op>, "pause" | "unpause">(true);
+    const selector = hex.encode(selectorOf("unpause(uint256)"), true);
+    const viemWord = hex.decode(encodeAbiParameters([{ type: "bytes4" }], [selector]));
+    assert.deepStrictEqual(serialize(op, "unpause"), viemWord);
+    assert.equal(deserialize(op, viemWord), "unpause");
+    assert.equal(BigInt(selectorIdOf("unpause(uint256)")), bignum.fromBytes(selectorOf("unpause(uint256)")));
+    //an overload would be two selectors under one name
+    assert.throws(() => selectorEnumItem(["f()", "f(uint256)"]), /not distinct/);
+  });
+
+  //regression: SigNameOf<string> was never, so a generic caller mapping over its signatures - which
+  //  map types as bare strings - got never for every name, and selectorEnumItem's return with it
+  it("names a wide signature as a wide string", () => {
+    pinEq<SigNameOf<string>, string>(true);
+    pinEq<SigNameOf<"f(uint256)" | "g()">, "f" | "g">(true);
+    const generic = <const S extends readonly [string, ...string[]]>(sigs: S) =>
+      selectorEnumItem(sigs);
+    pinEq<DeriveType<ReturnType<typeof generic<["f()", "g(bool)"]>>>, "f" | "g">(true);
   });
 });
 
@@ -183,6 +288,51 @@ describe("sigSwitchItem", () => {
 
   it("rejects a prefix wider than the hash", () => {
     assert.throws(() => sigSwitchItem(33, "error")([[unauthorized, {}]]));
+  });
+
+  it("carries a dynamic value's offset and tail unpadded, the tail only last", () => {
+    const failed = "Failed(bytes,uint256)";
+    const errorOf = sigSwitchItem(selectorLength, "error");
+    const item = errorOf([
+      [failed, { _offset: abiOffsetItem(2 * wordSize), code: uint256Item, reason: abiTailItem() }],
+    ]);
+    const value = { error: "Failed", code: 7n, reason: Uint8Array.from([0xc0, 0xff, 0xee]) } as const;
+    const encoded = serialize(item, value);
+    assert.deepStrictEqual(
+      encoded.subarray(selectorLength),
+      hex.decode(encodeAbiParameters([{ type: "bytes" }, { type: "uint256" }], ["0xc0ffee", 7n])),
+    );
+    assert.deepStrictEqual(deserialize(item, encoded), value);
+    assert.throws(
+      () => errorOf([
+        [failed, { _offset: abiOffsetItem(2 * wordSize), reason: abiTailItem(), code: uint256Item }],
+      ]),
+      /reason: an abi tail must be the only one, and come last/,
+    );
+    //a fixed word of one's own is no offset, so it gets paddedSlotLayout's verdict
+    const lookalike = { ...uint256Item, fixed: BigInt(2 * wordSize) };
+    assert.throws(
+      () => errorOf([[failed, { _offset: lookalike, code: uint256Item, reason: abiTailItem() }]]),
+      /surface a value/,
+    );
+  });
+
+  //composing a conversion onto a tail makes a new object, which must still ride unpadded, as
+  //  its type says
+  it("carries a tail under a further conversion", () => {
+    const failed = "Failed(bytes)";
+    const reason = withCustom(abiTailItem(), {
+      to:   (raw: RoUint8Array) => hex.encode(raw),
+      from: (text: string) => hex.decode(text),
+    });
+    const item =
+      sigSwitchItem(selectorLength, "error")([[failed, { _offset: abiOffsetItem(wordSize), reason }]]);
+    const encoded = serialize(item, { error: "Failed", reason: "c0ffee" });
+    assert.deepStrictEqual(
+      encoded.subarray(selectorLength),
+      hex.decode(encodeAbiParameters([{ type: "bytes" }], ["0xc0ffee"])),
+    );
+    assert.deepStrictEqual(deserialize(item, encoded), { error: "Failed", reason: "c0ffee" });
   });
 });
 

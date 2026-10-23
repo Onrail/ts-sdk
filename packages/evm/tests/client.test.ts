@@ -1,10 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { Address } from "viem";
+import type { Address, Hex } from "viem";
+import { encodeFunctionData, parseAbi } from "viem";
 import { hex } from "@onrail-xyz/utils";
 import { Amount, kind } from "@onrail-xyz/amount";
-import { selectorOf, wordSize, abiParam,
-         amountParam, addressItem, uint256Item } from "../src/layouting.js";
+import { selectorOf, wordSize, abiParam, amountParam,
+         addressItem, uint256Item, paramOf, addressParam, bytesParam } from "../src/layouting.js";
 import { abiFunction, contractFromSpec, toViemTx } from "../src/client.js";
 
 const to    = abiParam("to", "address", addressItem);
@@ -33,6 +34,13 @@ describe("contractFromSpec generated fields", () => {
     const { data } = contractFromSpec(contract, spec).pick(7n);
     assert.deepStrictEqual(data.subarray(0, 4), selectorOf("pick(uint256)"));
     assert.strictEqual(data.length, 4 + wordSize);
+  });
+
+  //a param of the generated selector's own name displaced it
+  it("rejects a param named like the generated selector", () => {
+    const selectorParam = abiParam("_selector", "uint256", uint256Item);
+    const spec = [abiFunction("pick", [selectorParam], _selector => ({ _selector }))] as const;
+    assert.throws(() => contractFromSpec(contract, spec), /not distinct: _selector, _selector/);
   });
 
   it("rejects a repeated method key", () => {
@@ -67,6 +75,44 @@ describe("contractFromSpec overloads", () => {
     assert.strictEqual(methods.mint.length, 1);
     assert.strictEqual(methods.mintValue.length, 2);
   });
+});
+
+describe("contractFromSpec dynamic params", () => {
+  const bytes32Param = paramOf("bytes32", { binary: "bytes", size: 32 } as const);
+  const uint256Param = paramOf("uint256", uint256Item);
+  const spec = [
+    //Uniswap v4 PositionManager's entry point: the bytes leads
+    abiFunction("modifyLiquidities", [bytesParam("unlockData"), uint256Param("deadline")],
+      (unlockData, deadline) => ({ unlockData, deadline })),
+    //TimelockController's: the bytes amid the list
+    abiFunction("schedule",
+      [addressParam("target"), uint256Param("value"), bytesParam("data"),
+       bytes32Param("predecessor"), bytes32Param("salt"), uint256Param("delay")],
+      (target, value, data, predecessor, salt, delay) =>
+        ({ target, value, data, predecessor, salt, delay })),
+  ] as const;
+  const dynamic = contractFromSpec(contract, spec);
+  const abi = parseAbi([
+    "function modifyLiquidities(bytes unlockData, uint256 deadline)",
+    "function schedule(address target, uint256 value, bytes data, bytes32 predecessor, bytes32 salt, uint256 delay)",
+  ]);
+  const word = (fill: number) => new Uint8Array(wordSize).fill(fill);
+
+  for (const size of [0, 1, 32, 33])
+    it(`places the tail after the whole head wherever the param sits, ${size} bytes`, () => {
+      const data = Uint8Array.from({ length: size }, (_, i) => i + 1);
+      assert.strictEqual(
+        hex.encode(dynamic.modifyLiquidities(data, 60n).data, true),
+        encodeFunctionData({ abi, functionName: "modifyLiquidities",
+          args: [hex.encode(data, true) as Hex, 60n] }),
+      );
+      assert.strictEqual(
+        hex.encode(dynamic.schedule(alice, 5n, data, word(2), word(3), 60n).data, true),
+        encodeFunctionData({ abi, functionName: "schedule",
+          args: [alice, 5n, hex.encode(data, true) as Hex,
+                 hex.encode(word(2), true) as Hex, hex.encode(word(3), true) as Hex, 60n] }),
+      );
+    });
 });
 
 const Eth = kind(

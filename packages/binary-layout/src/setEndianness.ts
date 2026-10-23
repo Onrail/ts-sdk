@@ -1,4 +1,4 @@
-import type { Get, Merge, If, Not } from "@onrail-xyz/utils";
+import type { Get, Merge, If, Not, Or } from "@onrail-xyz/utils";
 import type { Endianness, Layout, Item, Struct, NumItem, BytesItem,
               ArrayItem, SwitchItem, SwitchVariant, PackedItem, CodecItem } from "./layout.js";
 import { isByteLane, isBitGroup, type PackedWord } from "./size.js";
@@ -115,11 +115,7 @@ type IsBitGroup<I> = Get<I, "size"> extends number ? false : true;
 
 type SetItemEndianness<I extends Item, E extends Endianness, InPacked extends boolean> =
   I extends NumItem
-  ? InPacked extends true
-    ? I
-    : Get<I, "bits"> extends number
-      ? I
-      : SetProperty<I, "endianness", E>
+  ? If<Or<InPacked, HasBits<I>>, I, SetProperty<I, "endianness", E>>
   : I extends BytesItem
   ? Get<I, "size"> extends infer P extends Item
     ? SetProperty<RecurseLayoutProperty<I, E, false>, "size", SetItemEndianness<P, E, false>>

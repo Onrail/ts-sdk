@@ -1,12 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { Hex, Log, RpcLog } from "viem";
-import { getAddress, parseAbi, encodeEventTopics, encodeAbiParameters } from "viem";
+import { getAddress, parseAbi,
+         encodeEventTopics, encodeAbiParameters, encodeErrorResult } from "viem";
 import { bytes, utf8, hex } from "@onrail-xyz/utils";
 import { keccak256 } from "../src/hashing.js";
-import { addressItem, selectorOf, uint256Item, wordSize } from "../src/layouting.js";
+import { abiParam, addressParam, addressItem, paramOf, selectorOf,
+         sigVariant, uint256Item, wordSize, bytesParam, stringParam } from "../src/layouting.js";
 import type { ViemLog } from "../src/parsing.js";
 import { buildParseError, buildParseEvent } from "../src/parsing.js";
+import { pinEq } from "./typeAssert.js";
 
 const word = (body: string) => hex.decode(body.padStart(2 * wordSize, "0"));
 const ownerBytes = "0x00000000000000000000000000000000000000ab" as const;
@@ -37,6 +40,17 @@ describe("buildParseError", () => {
       () => parse(hex.decode("deadbeef")),
       /unrecognized error selector: 0xdeadbeef/,
     );
+  });
+
+  it("decodes a dynamic param ahead of a static one, its tail after the whole head", () => {
+    const abi = parseAbi(["error Failed(bytes reason, uint256 code)"]);
+    const parseFailed = buildParseError([sigVariant("Failed",
+      bytesParam("reason"), abiParam("code", "uint256", uint256Item))]);
+    const reason = hex.decode("c0ffee");
+    const parsed = parseFailed(hex.decode(encodeErrorResult({
+      abi, errorName: "Failed", args: [hex.encode(reason, true) as Hex, 7n],
+    })));
+    assert.deepStrictEqual(parsed, { error: "Failed", reason, code: 7n });
   });
 
   it("reports empty revert data as an empty selector", () => {
@@ -75,6 +89,47 @@ describe("buildParseEvent", () => {
                 bytes.concat(word(ownerBytes.slice(2)), word((123).toString(16))), true) as Hex }),
       { event: "DepositRequest", owner, usdc: 123n },
     );
+  });
+
+  //an indexed param rides a topic, so the dynamic payload's offset counts only the data's head
+  it("decodes a trailing dynamic param after an indexed one", () => {
+    const abi = parseAbi(["event Noted(address indexed who, uint256 n, string note)"]);
+    const parseNoted = buildParseEvent([sigVariant("Noted",
+      addressParam("who"),
+      abiParam("n", "uint256", uint256Item),
+      stringParam("note", { indexedParams: 1 }))]);
+    const parsed = parseNoted({
+      topics: encodeEventTopics({ abi, eventName: "Noted", args: { who: owner } }) as Hex[],
+      data:   encodeAbiParameters([{ type: "uint256" }, { type: "string" }], [7n, "ü ".repeat(20)]),
+    });
+    pinEq<typeof parsed.note, string>(true);
+    assert.deepStrictEqual(parsed, { event: "Noted", who: owner, n: 7n, note: "ü ".repeat(20) });
+  });
+
+  //TimelockController's: the dynamic param amid the data, behind two indexed ones
+  it("decodes a dynamic param amid the data", () => {
+    const abi = parseAbi([
+      "event CallScheduled(bytes32 indexed id, uint256 indexed index, address target, uint256 value, bytes data, bytes32 predecessor, uint256 delay)",
+    ]);
+    const bytes32Param = paramOf("bytes32", { binary: "bytes", size: 32 } as const);
+    const uint256Param = paramOf("uint256", uint256Item);
+    const parseScheduled = buildParseEvent([sigVariant("CallScheduled",
+      bytes32Param("id"), uint256Param("index"), addressParam("target"), uint256Param("value"),
+      bytesParam("data", { indexedParams: 2 }), bytes32Param("predecessor"), uint256Param("delay"))]);
+    const id = new Uint8Array(32).fill(1), predecessor = new Uint8Array(32).fill(2);
+    const data = hex.decode("c0ffee");
+    const parsed = parseScheduled({
+      topics: encodeEventTopics({
+        abi, eventName: "CallScheduled", args: { id: hex.encode(id, true) as Hex, index: 3n },
+      }) as Hex[],
+      data: encodeAbiParameters(
+        [{ type: "address" }, { type: "uint256" }, { type: "bytes" },
+         { type: "bytes32" }, { type: "uint256" }],
+        [owner, 5n, hex.encode(data, true) as Hex, hex.encode(predecessor, true) as Hex, 60n]),
+    });
+    assert.deepStrictEqual(parsed, {
+      event: "CallScheduled", id, index: 3n, target: owner, value: 5n, data, predecessor, delay: 60n,
+    });
   });
 
   it("reports an unknown topic0 in hex", () => {

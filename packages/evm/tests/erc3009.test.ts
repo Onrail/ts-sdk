@@ -17,7 +17,7 @@ import { probeNetwork, query, liveTimeout, token, usdcTreasury } from "./live.js
 const alice = "0x1111111111111111111111111111111111111111" as Address;
 const bob   = "0x2222222222222222222222222222222222222222" as Address;
 
-const maxUint256 = 2n ** 256n - 1n;
+const maxUint32 = 2n ** 32n - 1n;
 const hashStr = (s: string) => keccak256(utf8.encode(s));
 const nonce = new Uint8Array(32).fill(0x42);
 //r ‖ s ‖ v with distinguishable words
@@ -101,10 +101,10 @@ describe("erc3009 spec", () => {
       assert.deepStrictEqual(word(8), packedSig.subarray(32, 64));
     });
 
-    it("encodes the window as unix seconds, an infinite validBefore as max uint256", () => {
+    it("encodes the window as unix seconds, an infinite validBefore as max uint32", () => {
       const result = a.transferWithAuthorization({ ...params, validBefore: "infinity" });
       assert.strictEqual(wordOf(result.data, 3), 0n);
-      assert.strictEqual(wordOf(result.data, 4), maxUint256);
+      assert.strictEqual(wordOf(result.data, 4), maxUint32);
       const dated = a.transferWithAuthorization(params);
       assert.strictEqual(wordOf(dated.data, 4), BigInt(params.validBefore.getTime() / 1000));
     });
@@ -129,7 +129,7 @@ describe("compose*WithAuthorizationMsg", () => {
   it("defaults to a window open from the epoch that never closes", () => {
     const msg = compose();
     assert.strictEqual(msg.message.validAfter, 0n);
-    assert.strictEqual(msg.message.validBefore, maxUint256);
+    assert.strictEqual(msg.message.validBefore, maxUint32);
   });
 
   it("rejects a negative value", () => {

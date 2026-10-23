@@ -1,13 +1,13 @@
 import { type Address, checksumAddress } from "viem";
-import type { Identity, RoUint8Array, RoTuple,
-              RoNeTuple, RoPair, HeadTail, Opts, OptionalArg } from "@onrail-xyz/utils";
-import { utf8, hex, bignum, assertDistinct, argOf } from "@onrail-xyz/utils";
+import type { Identity, RoUint8Array, RoArray, RoTuple,
+              RoNeTuple, RoPair, HeadTail, Opts, OptionalArg, GetOpt, If } from "@onrail-xyz/utils";
+import { utf8, hex, bignum, assertDistinct, argOf, mapValues } from "@onrail-xyz/utils";
 import type { Conversion, Layout, Struct, DeriveType, Item,
               NumSizeToPrimitive, WithCustom, UnwrapSingleton } from "@onrail-xyz/binary-layout";
-import { serialize, deserialize,
-         calcStaticSize, paddingItem, unwrapSingleton,
-         isItem, uintItem, switchItem, numSizeToPrimitive,
-         timestampItem, withCustom, hasFixed, customOf, boolItem } from "@onrail-xyz/binary-layout";
+import { serialize, deserialize, calcStaticSize, paddingItem,
+         unwrapSingleton, isItem, uintItem, switchItem,
+         numSizeToPrimitive, timestampItem, withCustom,
+         enumItem, hasFixed, customOf, boolItem, utf8Conversion } from "@onrail-xyz/binary-layout";
 import type { KindWithAtomic } from "@onrail-xyz/amount";
 import { type AmountOr, amountItem, hashItem } from "@onrail-xyz/common";
 import { keccak256 } from "./hashing.js";
@@ -84,10 +84,13 @@ const paddedItem = <const I extends Item>(item: I): PaddedItem<I> => {
   ) as PaddedItem<I>;
 };
 
-//a generated wire-only field leads with an underscore - `_padding`, `_selector` - which keeps
-//  it out of the namespace a spec's own fields are spelled in
-const paddedStruct = <const S extends Struct>(layout: S) =>
-  ({ _padding: slotPadding(layout), ...layout } as const);
+//a generated wire-only field leads with an underscore - `_padding`, `_selector`, `_offset` - which
+//  keeps it out of the namespace a spec's own fields are usually spelled in; one spelled there
+//  anyway is rejected rather than overwritten
+const paddedStruct = <const S extends Struct>(layout: S) => {
+  assertDistinct("_padding", ...Object.keys(layout));
+  return { _padding: slotPadding(layout), ...layout } as const;
+};
 
 export type PaddedSlotLayout<T extends Struct | Item> =
   T extends Item
@@ -107,9 +110,7 @@ export type PaddedFields<S extends Struct> = { readonly [K in keyof S]: PaddedSl
 
 //every field on a slot of its own: the ABI's static parameter list, EIP-712's encodeData
 export const paddedFields = <const S extends Struct>(layout: S): PaddedFields<S> =>
-  Object.fromEntries(
-    Object.entries(layout).map(([name, field]) => [name, paddedSlotLayout(field)]),
-  ) as PaddedFields<S>;
+  mapValues(layout as Struct, paddedSlotLayout) as PaddedFields<S>;
 
 // ---- Value items ----
 
@@ -121,8 +122,11 @@ export const evmAmountItem =
     amountItem(wordSize, ...kind);
 
 //a maxed out deadline is the "never expires" idiom (EIP-2612, EIP-3009), and anything else out
-//  that far is not an intended instant either, so the whole high end resolves to the same sentinel
-export const deadlineItem = timestampItem({ size: wordSize, saturateAs: "infinity" });
+//  that far is not an intended instant either, so the whole high end resolves to the same sentinel;
+//  uint32 is the natural range of unix seconds, so "never" encodes as its max, which fits the
+//  narrower deadline fields of contracts that pack them
+export const deadlineItem =
+  timestampItem({ size: wordSize, saturateAs: "infinity", saturateFrom: 2 ** 32 - 1 });
 export type Deadline = DeriveType<typeof deadlineItem>;
 
 export const evmTimestampItem = timestampItem({ size: wordSize });
@@ -149,20 +153,34 @@ export const abiAddressItem = paddedSlotLayout(addressItem);
 export const abiBoolItem    = paddedSlotLayout(boolItem());
 
 //the ABI's `bytesN`, the one static type it pads on the right: spelled at word width, where a
-//  bare bytes item on a slot (an address, say) is left-padded like everything else
-const rightPaddedBytesLayout = <N extends number>(size: N) => ({
-  value:    { binary: "bytes", size },
-  _padding: paddingItem(wordSize - size),
-} as const);
+//  bare bytes item on a slot (an address, say) is left-padded like everything else. An item in
+//  place of the width gives the N bytes their content, read in wire order - so an integer over
+//  them must be big-endian, as the default is
+type RightPaddedStruct<I extends Item> = { readonly value: I, readonly _padding: SlotPadding };
+export type RightPaddedItem<I extends Item> = UnwrapSingleton<RightPaddedStruct<I>>;
 export type BytesNItem<N extends number> =
-  UnwrapSingleton<ReturnType<typeof rightPaddedBytesLayout<N>>>;
+  RightPaddedItem<{ readonly binary: "bytes", readonly size: N }>;
 
-export const bytesNItem = <N extends number>(size: N): BytesNItem<N> => {
+const rightPaddedItem = <I extends Item>(item: I): RightPaddedItem<I> => {
+  const size = calcStaticSize(item);
+  if (size === null || hasFixed(item))
+    throw new Error("a slot item must be statically sized and surface a value");
+
   if (!Number.isInteger(size) || size < 1 || size > wordSize)
     throw new Error(`bytes${size} is not an ABI type`);
 
-  return unwrapSingleton(rightPaddedBytesLayout(size));
+  return unwrapSingleton<RightPaddedStruct<I>>(
+    { value: item, _padding: paddingItem(wordSize - size) }
+  );
 };
+
+export const bytesNItem: {
+  <N extends number>(size: N): BytesNItem<N>,
+  <const I extends Item>(item: I): RightPaddedItem<I>,
+} = (sizeOrItem: number | Item): any =>
+  rightPaddedItem(
+    typeof sizeOrItem === "number" ? { binary: "bytes", size: sizeOrItem } : sizeOrItem
+  );
 
 // ---- Signatures ----
 
@@ -210,55 +228,94 @@ export const compactSignatureItem = withCustom({ r: hashItem, yParityAndS: hashI
 const funcSigHashPrefix = (funcSig: string, size: number) =>
   keccak256(utf8.encode(funcSig)).subarray(0, size);
 
+const sigPrefixId = <S extends number>(funcSig: string, size: S): NumSizeToPrimitive<S> => {
+  if (size < 1 || size > wordSize)
+    throw new Error(`signature prefix size must be within [1, ${wordSize}], got ${size}`);
+
+  return numSizeToPrimitive(bignum.fromBytes(funcSigHashPrefix(funcSig, size)), size);
+};
+
 export const selectorLength = 4;
-export const selectorOf = (funcSig: string) => funcSigHashPrefix(funcSig, selectorLength);
+export const selectorOf   = (funcSig: string) => funcSigHashPrefix(funcSig, selectorLength);
+export const selectorIdOf = (funcSig: string) => sigPrefixId(funcSig, selectorLength);
 
 export const selectorItem = (funcSig: string) =>
   ({ binary: "bytes", fixed: selectorOf(funcSig) } as const);
 
 export const selectorLayout =
   (funcSig: string) =>
-    <const L extends Struct>(layout: L) =>
-      ({ _selector: selectorItem(funcSig), ...layout } as const);
+    <const L extends Struct>(layout: L) => {
+      assertDistinct("_selector", ...Object.keys(layout));
+      return { _selector: selectorItem(funcSig), ...layout } as const;
+    };
 
-// ---- A single dynamic value ----
+//the selectors of a set of functions, surfaced by name: sigSwitchItem without the params. An
+//  ABI bytes4 is `bytesNItem(selectorEnumItem(...))`
+export type SelectorEnumItem<N extends string> = {
+  readonly binary: "uint",
+  readonly size:   typeof selectorLength,
+  readonly custom: Conversion<number, N>,
+};
 
-//poor man's abi.encode/decode(bytes): handles a single dynamic value - a trailing argument, or a
-//  lone return - whose payload therefore follows the whole head. `offset` is that head's size,
-//  its own word included - hence the default, a lone argument - and is the argument's index times
-//  the word size only where every preceding argument occupies exactly one slot
-const lengthSize = 4;
+//viewed as an array of S[number]: S's own map is its constraint's while S is open, typing each
+//  signature as a bare string
+export const selectorEnumItem = <const S extends RoTuple<string>>(
+  funcSigs: S,
+): SelectorEnumItem<SigNameOf<S[number]>> => {
+  const sigs: RoArray<S[number]> = funcSigs;
+  return enumItem(sigs.map(sig => [sigNameOf(sig), selectorIdOf(sig)] as const), selectorLength);
+};
+
+// ---- Dynamic values ----
+
+//the ABI puts a dynamic value's offset word in the head and its tail - length word, payload,
+//  padding - after the whole head. A layout cannot seek: the offset is a fixed word, right only
+//  if the tail sits where reading arrives anyway, so the offset is the head's size. A second
+//  tail's offset counts the first one's length, which takes an encoding pass
+export type AbiOffsetItem = {
+  readonly binary: "uint",
+  readonly size:   typeof wordSize,
+  readonly fixed:  bigint,
+};
+
+//known by identity: structurally an offset is any fixed word, which paddedSlotLayout rejects
+//  everywhere else
+const abiOffsetItems = new WeakSet<Layout>();
+const isAbiOffsetItem = (field: Layout): boolean => abiOffsetItems.has(field);
+
+export const abiOffsetItem = (headSize: number): AbiOffsetItem => {
+  const item = { ...uint256Item, fixed: BigInt(headSize) };
+  abiOffsetItems.add(item);
+  return item;
+};
+
 export type AbiEncoded<L extends Layout | undefined> =
   L extends Layout ? DeriveType<L> : RoUint8Array;
 
+const lengthSize = 4;
 //the payload stays raw bytes in the layout, so its length is at hand to check the padding
 //  against; the conversion runs the content layout, if any
-const abiEncodedLayout = (offset: number) => ({
-  offset:        { ...uint256Item, fixed: BigInt(offset) },
+const abiTailLayout = {
   lengthPadding: { binary: "bytes", fixed: new Uint8Array(wordSize - lengthSize) },
   item:          { binary: "bytes", size: { binary: "uint", size: lengthSize } },
   postPadding:   { binary: "bytes" },
-} as const);
+} as const;
 
 const paddingSizeOf = (dataSize: number) => (wordSize - dataSize % wordSize) % wordSize;
 
 //annotated so declaration emit prints the alias rather than WithCustom's evaluated form
-export type AbiEncodedBytesItem<L extends Layout | undefined> =
-  WithCustom<ReturnType<typeof abiEncodedLayout>, AbiEncoded<L>>;
+export type AbiTailItem<L extends Layout | undefined> =
+  WithCustom<typeof abiTailLayout, AbiEncoded<L>>;
 
-type AbiEncodedOpts = Opts<{ layout: Layout, offset: number }>;
-//the content layout, read off the whole record: one that may be undefined - or absent, where the
-//  record's own type declares it optional - types as either payload
-type ContentOf<O extends AbiEncodedOpts> = "layout" extends keyof O ? O["layout"] : undefined;
+type ContentOpts = Opts<{ layout: Layout }>;
 
-export const abiEncodedBytesItem = <const O extends AbiEncodedOpts = {}>(
+export const abiTailItem = <const O extends ContentOpts = {}>(
   ...[opts]: OptionalArg<O>
-): AbiEncodedBytesItem<ContentOf<O>> => {
-  type L = ContentOf<O>;
-  const layout = abiEncodedLayout(opts?.offset ?? wordSize);
+): AbiTailItem<GetOpt<O, "layout">> => {
+  type L = GetOpt<O, "layout">;
   const content = opts?.layout;
 
-  return withCustom(layout, {
+  return withCustom(abiTailLayout, {
     to: (wrapped) => {
       const { item, postPadding } = wrapped;
       if (postPadding.length !== paddingSizeOf(item.length) || postPadding.some(b => b !== 0))
@@ -272,6 +329,28 @@ export const abiEncodedBytesItem = <const O extends AbiEncodedOpts = {}>(
     },
   });
 };
+
+//recognized by its layout, which survives a conversion composed onto the item
+const isAbiTailItem = (field: Layout): boolean =>
+  isItem(field) && field.binary === "bytes" && field.layout === abiTailLayout;
+
+//poor man's abi.encode/decode(bytes): a lone dynamic value - a return, say
+type AbiEncodedStruct<L extends Layout | undefined> =
+  { readonly _offset: AbiOffsetItem, readonly value: AbiTailItem<L> };
+export type AbiEncodedBytesItem<L extends Layout | undefined> =
+  UnwrapSingleton<AbiEncodedStruct<L>>;
+
+export const abiEncodedBytesItem = <const O extends ContentOpts = {}>(
+  ...opts: OptionalArg<O>
+): AbiEncodedBytesItem<GetOpt<O, "layout">> =>
+  unwrapSingleton<AbiEncodedStruct<GetOpt<O, "layout">>>(
+    { _offset: abiOffsetItem(wordSize), value: abiTailItem<O>(...opts) }
+  );
+
+const utf8BytesItem = { binary: "bytes", custom: utf8Conversion } as const;
+
+export type AbiStringItem = AbiEncodedBytesItem<typeof utf8BytesItem>;
+export const abiStringItem: AbiStringItem = abiEncodedBytesItem({ layout: utf8BytesItem });
 
 // ---- Parameters ----
 
@@ -299,7 +378,7 @@ export type AbiParam<
 //  that is always a literal resolves eagerly, where a check on V would stay deferred whenever V
 //  is open (a stated AmountOrAtomic<K>), and a deferred conditional in parameter position
 //  admits nothing
-type ValueOf<I extends Item, Stated extends boolean, V> = Stated extends true ? V : DeriveType<I>;
+type ValueOf<I extends Item, Stated extends boolean, V> = If<Stated, V, DeriveType<I>>;
 
 type ParamFactory<Stated extends boolean, V> =
   <N extends string, T extends string, const I extends Item>(name: N, type: T, item: I) =>
@@ -345,24 +424,105 @@ export const amountParam = <
   abiParam<AmountOr<K, NumSizeToPrimitive<S>>>()
     (name, type, amountItem((args[1] ?? wordSize) as S, argOf(args)));
 
-//the one dynamic parameter a function spec admits. Its offset is a constant - the parameter
-//  count's word, since the whole head precedes the tail - but the payload can only follow the
-//  head, so bundling offset and payload into one item confines it to the last position, which
-//  `contractFromSpec` enforces and where it builds the item, the count being known only there
-export type DynamicAbiParam<N extends string, L extends Layout | undefined> =
-  AbiParam<N, "bytes", AbiEncodedBytesItem<L>, AbiEncoded<L>> &
-  { readonly dynamic: { readonly layout: L } };
+//the one dynamic parameter a param list admits, anywhere in it: one whose item is a tail. The
+//  offset word in its place is added where the list becomes a struct, the head being known only
+//  there. An event's indexed params ride its topics and take no room in the head, and nothing
+//  else in a param list says which they are, so the dynamic param states their number
+export type DynamicAbiParam<N extends string, T extends string, L extends Layout | undefined> =
+  AbiParam<N, T, AbiTailItem<L>, AbiEncoded<L>> & { readonly indexedParams: number };
 
-//`bytes` as a function's last parameter - raw, or the serialization of `layout`. The item is a
-//  placeholder built at offset zero; `contractFromSpec` rebuilds it once the parameter list
-//  fixes the head's size, which the type does not depend on
-export const trailingBytesParam = <
-        N extends string,
-  const L extends Layout | undefined = undefined,
->(name: N, ...layout: OptionalArg<L>): DynamicAbiParam<N, L> => ({
-  ...abiParam(name, "bytes", abiEncodedBytesItem({ layout: argOf(layout) })),
-  dynamic: { layout: argOf(layout) },
-}) as DynamicAbiParam<N, L>;
+const isDynamicParam =
+  (param: AbiParam): param is AbiParam & { readonly indexedParams?: number } =>
+    isAbiTailItem(param.item);
+
+type DynamicParamOpts = Opts<{ layout: Layout, indexedParams: number }>;
+
+const dynamicParam = <N extends string, T extends string, L extends Layout | undefined>(
+  name:          N,
+  type:          T,
+  layout:        L,
+  indexedParams: number = 0,
+): DynamicAbiParam<N, T, L> => ({
+  ...abiParam(name, type, abiTailItem({ layout })),
+  indexedParams,
+}) as DynamicAbiParam<N, T, L>;
+
+export const bytesParam = <N extends string, const O extends DynamicParamOpts = {}>(
+  name: N,
+  ...[opts]: OptionalArg<O>
+): DynamicAbiParam<N, "bytes", GetOpt<O, "layout">> =>
+  dynamicParam(name, "bytes", opts?.layout as GetOpt<O, "layout">, opts?.indexedParams);
+
+export const stringParam = <N extends string, const O extends DynamicParamOpts = {}>(
+  name: N,
+  ...[opts]: OptionalArg<O>
+): DynamicAbiParam<N, "string", GetOpt<O, "layout", typeof utf8BytesItem>> =>
+  dynamicParam(
+    name,
+    "string",
+    (opts?.layout ?? utf8BytesItem) as GetOpt<O, "layout", typeof utf8BytesItem>,
+    opts?.indexedParams,
+  );
+
+const abiHeadSize = (params: RoArray<AbiParam>): number =>
+  params.reduce((size, param) => size + (isDynamicParam(param)
+    ? wordSize
+    : calcStaticSize(paddedSlotLayout(param.item))!
+  ), 0);
+
+type OffsetField<P extends RoTuple<AbiParam>> = {
+  readonly [E in P[number] as E["item"] extends AbiTailItem<any> ? "_offset" : never]:
+    AbiOffsetItem;
+};
+
+//the params' items by name, in wire order: a dynamic param's offset word in its place, its tail
+//  after the head
+export type ParamsStruct<P extends RoTuple<AbiParam>> =
+  { readonly [E in P[number] as E["name"]]: E["item"] } & OffsetField<P>;
+
+//`inTopics` leading params - an event's indexed ones - take no room in the head
+const paramsStruct = (params: RoArray<AbiParam>, inTopics: number): Struct => {
+  const dynamic = params.filter(isDynamicParam);
+  if (dynamic.length > 1)
+    throw new Error(`${dynamic[1]!.name}: a param list admits one dynamic parameter only`);
+
+  const fields = [
+    ...params.map(param => isDynamicParam(param)
+      ? ["_offset", abiOffsetItem(abiHeadSize(params.slice(inTopics)))] as const
+      : [param.name, param.item] as const),
+    ...dynamic.map(param => [param.name, param.item] as const),
+  ];
+  assertDistinct(...fields.map(([key]) => key));
+  return Object.fromEntries(fields);
+};
+
+//a struct on its slots: each field padded onto its own, but for a dynamic value's offset word and
+//  tail, which already are - the tail last, since it follows the head
+type SlotFields<S extends Struct> = {
+  readonly [K in keyof S]:
+    S[K] extends AbiOffsetItem | AbiTailItem<any> ? S[K] : PaddedSlotLayout<S[K]>;
+};
+
+const slotFields = (struct: Struct): Struct => {
+  const fields = Object.entries(struct);
+  return Object.fromEntries(fields.map(([name, field], i) => {
+    if (isAbiOffsetItem(field))
+      return [name, field];
+
+    if (!isAbiTailItem(field))
+      return [name, paddedSlotLayout(field)];
+
+    if (i !== fields.length - 1)
+      throw new Error(`${name}: an abi tail must be the only one, and come last`);
+
+    return [name, field];
+  }));
+};
+
+export type ParamsLayout<P extends RoTuple<AbiParam>> = SlotFields<ParamsStruct<P>>;
+
+export const paramsLayout = <const P extends RoTuple<AbiParam>>(params: P): ParamsLayout<P> =>
+  slotFields(paramsStruct(params, 0)) as ParamsLayout<P>;
 
 // ---- Signature variants: events and errors ----
 
@@ -376,8 +536,10 @@ export const signatureOf = (name: string, params: RoTuple<AbiParam>): string => 
   return `${name}(${params.map(p => p.type).join(",")})`;
 };
 
-//the name a signature leads with - `signatureOf` read backwards, as far as the name goes
-export type SigNameOf<S extends string> = S extends `${infer N}(${string}` ? N : never;
+//the name a signature leads with - `signatureOf` read backwards, as far as the name goes; a wide
+//  string's name is a wide string
+export type SigNameOf<S extends string> =
+  S extends `${infer N}(${string}` ? N : string extends S ? string : never;
 
 export const sigNameOf = <S extends string>(funcSig: S): SigNameOf<S> => {
   const open = funcSig.indexOf("(");
@@ -393,21 +555,23 @@ type JoinTypes<P extends RoTuple<AbiParam>> =
   : "";
 
 export type SigVariantOf<N extends string, P extends RoTuple<AbiParam>> =
-  SigVariant<`${N}(${JoinTypes<P>})`, { readonly [E in P[number] as E["name"]]: E["item"] }>;
+  SigVariant<`${N}(${JoinTypes<P>})`, ParamsStruct<P>>;
 
 //a variant from its name and params, so an event or error is spelled once
 export const sigVariant = <
         N extends string,
   const P extends RoTuple<AbiParam>,
->(name: N, ...params: P): SigVariantOf<N, P> =>
-  [signatureOf(name, params), Object.fromEntries(params.map(p => [p.name, p.item]))] as any;
+>(name: N, ...params: P): SigVariantOf<N, P> => {
+  const inTopics = (params as RoArray<AbiParam>).find(isDynamicParam)?.indexedParams ?? 0;
+  return [signatureOf(name, params), paramsStruct(params, inTopics)] as any;
+};
 
 type SwitchRows = Parameters<typeof switchItem>[2];
 
 type SigRows<IS extends number, V extends SigVariants> = {
   readonly [K in keyof V]:
     V[K] extends SigVariant<infer S, infer P>
-    ? readonly [NumSizeToPrimitive<IS>, SigNameOf<S>, PaddedFields<P>]
+    ? readonly [NumSizeToPrimitive<IS>, SigNameOf<S>, SlotFields<P>]
     : never
 };
 
@@ -422,13 +586,6 @@ type SigRowsBound<IS extends number, V extends SigVariants> =
 export type SigSwitcher<IS extends number, T extends string> =
   <const V extends SigVariants>(variants: V) =>
     ReturnType<typeof switchItem<T, ReturnType<typeof uintItem<IS, {}>>, SigRowsBound<IS, V>, {}>>;
-
-const sigPrefixId = <S extends number>(funcSig: string, size: S): NumSizeToPrimitive<S> => {
-  if (size < 1 || size > wordSize)
-    throw new Error(`signature prefix size must be within [1, ${wordSize}], got ${size}`);
-
-  return numSizeToPrimitive(bignum.fromBytes(funcSigHashPrefix(funcSig, size)), size);
-};
 
 //a switch over signature-derived ids, decoding the abi-encoded params of the matched variant.
 //  The tag surfaces the signature's own name, Solidity's spelling included - a consumer wanting
@@ -446,7 +603,7 @@ export const sigSwitchItem = <
     switchItem(tag, uintItem(idSize), (variants as SigVariants).map(([funcSig, params]) => [
       sigPrefixId(funcSig, idSize),
       sigNameOf(funcSig),
-      paddedFields(params),
+      slotFields(params),
     ] as const) as unknown as SigRowsBound<IS, V>);
 
 // ---- Storage slots ----

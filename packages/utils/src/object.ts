@@ -52,6 +52,12 @@ const isComposite = (val: unknown): val is object =>
 export type Get<O, K extends PropertyKey> =
   O extends Record<K, unknown> ? O[K] : undefined;
 
+//the counterpart for reading an options record: a key that *may* be present - optional
+//  included - yields its type, one that is surely absent yields Absent. Distributes over unions
+//  of records, so a key only some of them carry still counts
+export type GetOpt<O, K extends PropertyKey, Absent = undefined> =
+  O extends unknown ? K extends keyof O ? O[K] : Absent : never;
+
 // ---- TrueKeys ----
 
 //the type-level counterpart of filtering an object's keys by a predicate: since TS has no
@@ -131,6 +137,24 @@ export function replace<
   return { ...obj, [key]: newValue } as Replace<O, K, V>;
 }
 
+// ---- MapValues ----
+
+type NamedKey<O> = Exclude<keyof O, symbol>;
+
+export type MapValues<O extends object, R> = { [K in keyof Pick<O, NamedKey<O>>]: R };
+
+export function mapValues<
+  const O extends object,
+        R,
+>(
+  obj: O & Plain<O>,
+  f:   (value: O[NamedKey<O>], key: PropertyName<NamedKey<O>>) => R,
+): MapValues<O, R> {
+  return Object.fromEntries(
+    Object.entries(obj).map(([key, value]) => [key, f(value, key as PropertyName<NamedKey<O>>)]),
+  ) as MapValues<O, R>;
+}
+
 // ---- Merge ----
 
 type OptionalKeys<T> = TrueKeys<{ [K in keyof T]: Extends<{}, Pick<T, K>> }>;
@@ -183,11 +207,12 @@ export type Spread<O extends object, K extends keyof O> =
 //keys holding a plain object whose keys are disjoint from the remaining keys
 //  (the IsAny guard keeps deliberately type-erased call sites from collapsing to never)
 type SpreadableKeys<O extends object> =
-  IsAny<O> extends true
-  ? keyof O
-  : TrueKeys<{ [K in keyof O]:
+  If<IsAny<O>,
+    keyof O,
+    TrueKeys<{ [K in keyof O]:
       If<IsPlain<O[K]>, IsNever<keyof O[K] & Exclude<keyof O, K>>, false>;
-    }>;
+    }>
+  >;
 
 export function spread<
   const O extends object,
@@ -445,7 +470,7 @@ export type ObjectEntry<K extends PropertyKey = PropertyKey, V = unknown> = RoPa
 
 type CertainEntryKeys<A extends RoArray<ObjectEntry>, K extends PropertyKey = never> =
   ElementRest<A> extends [infer E extends ObjectEntry, infer R extends RoArray<ObjectEntry>]
-  ? CertainEntryKeys<R, K | (IsLiteral<E[0]> extends true ? E[0] : never)>
+  ? CertainEntryKeys<R, K | If<IsLiteral<E[0]>, E[0], never>>
   : K;
 
 type PropertyName<K extends PropertyKey> = K extends number ? `${K}` : K;

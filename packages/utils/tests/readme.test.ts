@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import type { ConstMap, MapLevels, ShapeLike, Brand,
               ExtractTags, PreserveBrand, SameBrand, Get, Identity,
               Ro, DeepRo, ApplyAliases, SuppressExpansion, Simplify } from "../src/index.js";
-import { mapTo, entries, valueIndexEntries, range, flatten,
-         chunk, zip, column, pickWithOrder, filterIndexes,
-         pick, omit, omitUndefined, replace, merge, spread, nest,
-         deepOmit, deepReplace, anyKey, fromEntries, constMap, uppercase,
+import { mapTo, entries, valueIndexEntries, range, flatten, chunk, zip,
+         column, pickWithOrder, filterIndexes, pick, omit, omitUndefined,
+         replace, mapValues, merge, spread, nest, deepOmit, deepReplace,
+         anyKey, fromEntries, constMap, mappingRows, uppercase,
          lowercase, capitalize, uncapitalize, otherCap, stripPrefix, pipe,
          identity, raise, tap, tryOr, map, fallback, ensure, forbid, brand } from "../src/index.js";
 import type { Assert } from "./typeAssert.js";
-import { pinEq } from "./typeAssert.js";
+import { pinEq, typeOnly } from "./typeAssert.js";
 
 describe("ReadMe Array Utilities", () => {
   it("type-preserving map", () => {
@@ -45,6 +45,7 @@ describe("ReadMe Object Utilities", () => {
     const omitted  = omit({ a: 1, b: 2, c: 3 }, "c");
     const defined  = omitUndefined({ a: 1, b: undefined });
     const replaced = replace({ a: 1, b: 2 }, "a", "new");
+    const mapped   = mapValues({ a: 1, b: 2 }, v => v + 1);
     const merged   = merge({ a: 1 }, { a: 2, b: 3 });
     const spreaded = spread({ a: 1, n: { b: 2, c: 3 } }, "n");
     const nested   = nest({ a: 1, b: 2, c: 3 }, "n", ["b", "c"]);
@@ -52,6 +53,7 @@ describe("ReadMe Object Utilities", () => {
     pinEq<Simplify<typeof omitted>,  { readonly a: 1, readonly b: 2 }>(true);
     pinEq<typeof defined,            { readonly a: 1 }>(true);
     pinEq<Simplify<typeof replaced>, { readonly a: "new", readonly b: 2 }>(true);
+    pinEq<typeof mapped,             { readonly a: number, readonly b: number }>(true);
     pinEq<typeof merged,             { readonly a: 1, readonly b: 3 }>(true);
     pinEq<typeof spreaded,           { readonly a: 1, readonly b: 2, readonly c: 3 }>(true);
     pinEq<Simplify<typeof nested.n>, { readonly b: 2, readonly c: 3 }>(true);
@@ -59,6 +61,7 @@ describe("ReadMe Object Utilities", () => {
     assert.deepEqual(omitted,  { a: 1, b: 2 });
     assert.deepEqual(defined,  { a: 1 });
     assert.deepEqual(replaced, { a: "new", b: 2 });
+    assert.deepEqual(mapped,   { a: 2, b: 3 });
     assert.deepEqual(merged,   { a: 1, b: 3 });
     assert.deepEqual(spreaded, { a: 1, b: 2, c: 3 });
     assert.deepEqual(nested,   { a: 1, n: { b: 2, c: 3 } });
@@ -147,15 +150,33 @@ describe("ReadMe Const Maps", () => {
 
   it("keys are strict, loose input goes through has / get", () => {
     // @ts-expect-error the second key's union depends on the first
-    unitSymbol("nautical", "mass");
+    typeOnly(() => unitSymbol("nautical", "mass"));
 
     const loose: string = "length";
     // @ts-expect-error a widened key is only acceptable to has / get
-    unitSymbol("si", loose);
+    typeOnly(() => unitSymbol("si", loose));
 
     const val = unitSymbol.get("si", loose);
     pinEq<typeof val, "m" | "kg" | "m/s" | "nmi" | "kn" | undefined>(true);
     assert.equal(val, "m");
+  });
+
+  it("the row list", () => {
+    const rows = mappingRows(units);
+    pinEq<typeof rows, [
+      ["si",       "length",   "m"],
+      ["si",       "mass",    "kg"],
+      ["si",       "speed",  "m/s"],
+      ["nautical", "length", "nmi"],
+      ["nautical", "speed",   "kn"],
+    ]>(true);
+    assert.deepEqual(rows, [
+      ["si",       "length",   "m"],
+      ["si",       "mass",    "kg"],
+      ["si",       "speed",  "m/s"],
+      ["nautical", "length", "nmi"],
+      ["nautical", "speed",   "kn"],
+    ]);
   });
 
   it("custom shapes", () => {

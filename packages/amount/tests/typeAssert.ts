@@ -6,3 +6,7 @@ type Equal<A, B> =
 //a type pin: `pinEq<Actual, Expected>(true)` compiles only if the two are identical, and a
 //  failure prints both
 export const pinEq = <A, B>(_: Equal<A, B> extends true ? true : { error: [A, B] }) => {};
+
+//typechecks a call without running it, for calls the types reject: a rejected call's runtime
+//  behavior is unspecified, so running one would pin whatever it happens to do
+export const typeOnly = (_: () => unknown) => {};

@@ -5,6 +5,7 @@ import { serialize, deserialize,
          calcStaticSize, buildDiscriminator, withCustom, pin,
          uintItem, intItem, bytesItem, arrayItem, switchItem,
          codecItem, timestampItem, timestampConversion, utf8Conversion } from "../src/index.js";
+import { typeOnly } from "./typeAssert.js";
 
 describe("switch id domain", () => {
   it("rejects an id of the wrong primitive for the id width", () => {
@@ -133,6 +134,6 @@ describe("timestamp opts", () => {
     const item = timestampItem({ unit });
     assert.equal(deserialize(item, serialize(item, new Date(1000))).getTime(), 1000);
     //@ts-expect-error a conversion has no byte order to take
-    timestampConversion({ endianness: "little" });
+    typeOnly(() => timestampConversion({ endianness: "little" }));
   });
 });

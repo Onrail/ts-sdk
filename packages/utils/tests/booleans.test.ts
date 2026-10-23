@@ -34,6 +34,7 @@ pinEq<IsLiteral<`a${string}`> | IsLiteral<`${number}`> | IsLiteral<Uppercase<str
 pinEq<IsLiteral<1 | 2>, false>(true);
 pinEq<IsLiteral<{ readonly x: 1 }> | IsLiteral<readonly []>, false>(true);
 pinEq<IsLiteral<never>, false>(true);
+pinEq<IsLiteral<any>, false>(true);
 
 pinEq<Not<true>, false>(true);
 pinEq<Not<false>, true>(true);

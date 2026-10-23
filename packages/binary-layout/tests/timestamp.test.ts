@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { DeriveType, Endianness } from "../src/index.js";
 import { serialize, deserialize, timestampConversion, timestampItem } from "../src/index.js";
-import { pinEq } from "./typeAssert.js";
+import { pinEq, typeOnly } from "./typeAssert.js";
 
 describe("timestampConversion", () => {
   const wholeSecond = new Date("2030-01-01T00:00:00.000Z");
@@ -132,6 +132,44 @@ describe("timestampConversion", () => {
       const conv = timestampConversion({ saturateAs: new Date(fieldMax * 1000) });
       assert.strictEqual(conv.from(new Date(fieldMax * 1000)), fieldMax);
     });
+
+    describe("below the field's max", () => {
+      const ceiling = 2n ** 32n - 1n;
+      const wide = timestampConversion({ size: 32, saturateAs: "forever", saturateFrom: ceiling });
+
+      it("encodes the sentinel and too-late dates as the ceiling", () => {
+        assert.strictEqual(wide.from("forever"), ceiling);
+        assert.strictEqual(wide.from(new Date("2200-01-01T00:00:00.000Z")), ceiling);
+      });
+
+      it("decodes the ceiling and every count above it to the sentinel", () => {
+        assert.strictEqual(wide.to(ceiling), "forever");
+        assert.strictEqual(wide.to(ceiling + 1n), "forever");
+        assert.strictEqual(wide.to(2n ** 256n - 1n), "forever");
+      });
+
+      it("leaves the count just below the ceiling a date", () => {
+        assert.deepStrictEqual(wide.to(ceiling - 1n), new Date(Number(ceiling - 1n) * 1000));
+      });
+
+      it("works in the number domain too", () => {
+        const narrow = timestampConversion({ size: 6, saturateAs: "forever", saturateFrom: fieldMax });
+        assert.strictEqual(narrow.from("forever"), fieldMax);
+        assert.strictEqual(narrow.to(fieldMax + 1), "forever");
+      });
+
+      it("rejects a ceiling the field can't hold", () => {
+        assert.throws(
+          () => timestampConversion({ saturateAs: "forever", saturateFrom: 2 ** 32 }),
+          /saturateFrom 4294967296 lies outside the uint32 field/,
+        );
+      });
+
+      it("takes no ceiling without a sentinel", () => {
+        // @ts-expect-error - nothing to saturate as
+        typeOnly(() => timestampConversion({ saturateFrom: 0 }));
+      });
+    });
   });
 
   describe("origin and unit", () => {
@@ -205,6 +243,6 @@ describe("timestamp options that may be undefined", () => {
   });
   it("reject an opts record that may be absent", () => {
     // @ts-expect-error - the item's shape would depend on it
-    timestampItem(undefined as { size: 8 } | undefined);
+    typeOnly(() => timestampItem(undefined as { size: 8 } | undefined));
   });
 });

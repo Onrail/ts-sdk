@@ -6,9 +6,10 @@ Worked examples:
 
 * [packages/evm/src/layouting.ts](./packages/evm/src/layouting.ts): `SigSwitcher`, `PaddedItem`, `AbiParam`, and `AddressItem`;
 * [packages/evm/src/parsing.ts](./packages/evm/src/parsing.ts): `ParsedError` and `ParsedEvent`;
-* [packages/svm/src/layouting.ts](./packages/svm/src/layouting.ts): `LamportsItem`, `DefaultOptionItem`, and `DiscriminatedItem`;
+* [packages/svm/src/layouting.ts](./packages/svm/src/layouting.ts): `LamportsItem`, `COptionItem`, and `DiscriminatedItem`;
 * [packages/svm/src/client.ts](./packages/svm/src/client.ts): `GetTokenAccount` and `BoundClient`;
 * [packages/binary-layout/src/layout.ts](./packages/binary-layout/src/layout.ts): `Conversion`;
+* [packages/binary-layout/src/items.ts](./packages/binary-layout/src/items.ts): `OptionItem` and `DefaultOptionItem`;
 * [packages/common/src/layouting.ts](./packages/common/src/layouting.ts): the remaining `AmountItem` limitation.
 
 Everything below was measured under TypeScript 7.0.2.
@@ -347,31 +348,26 @@ The general rule is:
 
 ### Sometimes the public contract already contains the right type
 
-`defaultOptionItem` converts a derived option representation:
+binary-layout's option items convert a derived switch representation, `DeriveType<OptionSwitch<T, A, I>>`, whose present arm has a `value` of type `OptionValue<T>` at every concrete payload `T`.
+
+At an open `T`, TypeScript cannot reduce the indexed and conditional machinery far enough to prove that relationship in the implementation:
 
 ```typescript
-type BaseDefaultOption<L extends Layout> =
-  DeriveType<ReturnType<typeof baseDefaultOptionLayout<L>>>;
+opt["value"]
 ```
 
-At a concrete `L`, the value field has type `DeriveType<L>`.
-
-At an open `L`, TypeScript cannot reduce the indexed and conditional machinery far enough to prove that relationship in the implementation:
+The conversion contract already states the intended surfaced type, so the implementation casts to that contract:
 
 ```typescript
-obj.value
+to: opt =>
+  opt["isSome"] === true
+  ? (opt as Exclude<typeof opt, { isSome: false }>)["value"] as OptionValue<T>
+  : undefined,
 ```
 
-The conversion contract already states the intended surfaced type, so the implementation annotates to that contract:
+Both casts record a relationship rather than invent one: the `Exclude` narrows the union on a discriminant the checker cannot narrow while `T` is open, and the second states the type the present arm's `value` has at every concrete `T`.
 
-```typescript
-to: (obj: BaseDefaultOption<L>): DeriveType<L> | undefined =>
-  obj.isSome ? obj.value as DeriveType<L> : undefined,
-```
-
-The cast is not inventing a relationship. It records one that holds for every concrete `L` but remains opaque to the checker while `L` is open.
-
-This is preferable to letting the unresolved indexed access become part of an inferred declaration.
+Since `convertedOption`'s return is annotated, neither cast touches the declarations; they exist for the implementation to check.
 
 ---
 
@@ -778,6 +774,8 @@ LamportsItem<ConcreteKind>
 anonymous instantiated branch
 ```
 
+The experiments in the rest of this step and in Step 6 use one specimen: a `defaultOptionItem` built with `withCustom` over a `baseDefaultOptionLayout`. binary-layout's actual option items take the second route Step 6 ends on.
+
 This explains a failed attempt to name `defaultOptionItem` with a conditional or `ReturnType`-based alias. The name survived only in the factory's own open declaration. Concrete embeddings resolved the operation and expanded again.
 
 The measured reduction was 362 bytes from a 21,651-byte file: noise rather than a systemic fix.
@@ -841,7 +839,7 @@ DefaultOptionItem<AddressItem>
 
 In the experiment, this reduced `svm/layouting.d.ts` from 21.6 KB to 13.7 KB.
 
-Its defect is maintenance rather than emission: the alias manually duplicates the factory's inferred object shape. The implementation and public type can drift.
+Its cost is maintenance rather than emission: the alias spells out the factory's shape a second time. Annotating the factory with it turns a contradiction between the two into a compile error, but an alias looser than the implementation still passes.
 
 ### An alias whose body is a reference to another alias carries that alias's name
 
@@ -957,7 +955,7 @@ The correct practical rule is empirical:
 
 An object-type alias travels well, but spelling a large inferred return by hand is brittle.
 
-`DefaultOptionItem` uses an interface to acquire a durable name without restating the implementation's members.
+The specimen's `DefaultOptionItem` uses an interface to acquire a durable name without restating the implementation's members.
 
 ### Split the implementation
 
@@ -1055,6 +1053,8 @@ export const factory: <T>(arg: T) => FactoryResult<T> = _factory;
 It is useful specifically when a factory's inferred object return is large and will be embedded repeatedly.
 
 It should not replace a small meaningful public interface which is easier to write directly.
+
+binary-layout's option items are the second case. Their switch is small and fixed, so `OptionSwitch` spells it as an object alias, the private `convertedOption` is annotated with it, and the public names are interfaces composed by heritage clauses over it: `OptionItem<T, O>` and `DefaultOptionItem<T, O>`, and in svm `COptionItem<L> extends DefaultOptionItem<L, typeof cOptionOpts>`, which is what every account layout prints.
 
 The same technique gives a plain value an interface name: `interface X extends Identity<typeof x> {}`, where `Identity<T> = T` supplies the type reference a heritage clause needs in place of the bare type query. Step 7 uses it for `addressItem`, and the kinds in `common/units.ts` are declared the same way.
 

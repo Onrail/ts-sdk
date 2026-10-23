@@ -164,7 +164,7 @@ That's the tour. The rest is the manual — one front-to-back read pays off, but
 * [Engine Functions](#engine-functions) — `serialize`, `deserialize`, sizing
 * [More on Automatic Discrimination](#more-on-automatic-discrimination) — discriminators, one-step deserialization, vs *switch*, limitations
 * [Guarantees & Strictness](#guarantees--strictness) — the trust boundary, canonicality, undefined behavior
-* [Additional Items & Sugar](#additional-items--sugar) — bool, padding, enum, option, timestamp, varints, RLP, ...
+* [Additional Items & Sugar](#additional-items--sugar) — padding, bool, enum, niche, option, timestamp, varints, RLP, ...
 * [Operations](#operations) — `withCustom`, `pin`, `spreadLayout`, `unwrapSingleton`, `setEndianness`, tree predicates
 * [Limitations](#limitations)
 * [Future Direction](#future-direction) — spans, `checksummed`, recorded non-goals
@@ -370,7 +370,7 @@ A discriminator is a best-effort filter in front of deserialization — the brut
 >
 > The cutoff is 53 bits — the largest integer width a `number` holds without loss of precision — of which 6 bytes is the largest whole-byte width. Both are exported, as `numberMaxBits` and `numberMaxSize`; `NumSizeToPrimitive<S>` and `NumBitsToPrimitive<B>` compute the type, and `NumType` is `number | bigint`.
 
-The factories bind `fixed` and `custom` to that primitive: `uintItem(8, { custom })` demands a `Conversion<bigint>`, `uintItem(4, { custom })` a `Conversion<number>`, and a width whose type is `number` rather than a literal (`4 as number`) a conversion over both — the runtime hands the conversion whichever the width yields. Raw literals carry no such check. `boolItem` and `enumItem` run in `number` and so admit only widths that derive it (the exported `NumberSize` / `NumberBits`).
+The factories bind `fixed` and `custom` to that primitive: `uintItem(8, { custom })` demands a `Conversion<bigint>`, `uintItem(4, { custom })` a `Conversion<number>`, and a width whose type is `number` rather than a literal (`4 as number`) a conversion over both — the runtime hands the conversion whichever the width yields. Raw literals carry no such check. [`boolItem`, `enumItem` and `nicheItem`](#bool) follow the same rule: their conversions take whichever primitive their integer derives.
 
 Signed integers are stored using two's complement. Arbitrary byte sizes are legal (3, 16, 20, 32, ...). Default endianness for all numerics — *(u)int*s and prefix items alike — is big.
 
@@ -873,7 +873,7 @@ Deserialization:
 
 The canonicality rules make decoding injective — two distinct wire encodings never produce the same value, and re-serializing a deserialized value reproduces its exact bytes — which closes off the classic smuggling vector where equal-looking values have unequal encodings.
 
-The guarantee covers everything the library controls, and the ways out of it are explicit: `permissive` modes waive it by design, [`saturateAs`](#timestamp) makes a field's maximum and every count beyond `Date`'s reach synonyms for its sentinel, and hand-written extensions become part of the trust boundary themselves — a `Conversion` preserves it iff `from(to(raw)) = raw` for every raw value it accepts, a codec iff its `write` exactly inverts its `read` and non-canonical encodings are rejected. `permissive` is the library-wide name for such an opt-out: [varints](#varints) waive minimality under it, [`boolItem`](#bool) its 0/1 restriction.
+The guarantee covers everything the library controls, and the ways out of it are explicit: `permissive` modes waive it by design, [`saturateAs`](#timestamp) makes a field's ceiling, every count above it and every count beyond `Date`'s reach synonyms for its sentinel, and hand-written extensions become part of the trust boundary themselves — a `Conversion` preserves it iff `from(to(raw)) = raw` for every raw value it accepts, a codec iff its `write` exactly inverts its `read` and non-canonical encodings are rejected. `permissive` is the library-wide name for such an opt-out: [varints](#varints) waive minimality under it, [`boolItem`](#bool) its 0/1 restriction, [`defaultOptionItem`](#option) the check of its absent body.
 
 These guarantees, together with the limitations naturally imposed by strong typing, should radically cut down on the errors associated with binary serialization. It remains up to applications to check the internal coherence of any data received from untrusted sources.
 
@@ -881,23 +881,26 @@ These guarantees, together with the limitations naturally imposed by strong typi
 
 The following are built on top of the primitives above to cover common use cases — and double as examples of how to build your own.
 
+### Padding
+
+`paddingItem(size)` is `size` constant zero bytes; `paddingItem.bits(n)` is `n` constant zero bits inside *packed* layouts. Both are fixed items and hence absent from derived types, emitted on serialization, and verified zero on deserialization.
+
 ### Bool
 
-`boolItem(size?)` converts an unsigned integer into a boolean, `size` defaulting to a single byte; `boolItem.bits(bits?)` is the bit-width form for *packed* layouts, `bits` defaulting to a single bit. Both are strict by default — only 0 and 1 are valid — and `{ permissive: true }` in the width slot accepts any non-zero value as true; the sized form additionally takes an `endianness`, for the multi-byte booleans C ABIs are fond of.
+`boolItem(carrier?)` converts an integer into a boolean, and is strict by default: only 0 and 1 are valid. `{ permissive: true }` accepts any non-zero value as true.
+
+Bool, [enum](#enum) and [niche](#niche) each put a conversion on an integer, the carrier, and share one slot for it. A size (default 1) or `{ size, endianness }` makes it a *uint* of any width — the multi-byte booleans C ABIs are fond of included — and an integer item without `fixed`/`as`/`custom` (a `NumCarrier`) takes it whole, signed or `bits` alike, `{ carrier: item }` being the same with room for `permissive`. The conversion runs in the carrier's primitive, so a carrier wider than 6 bytes or 53 bits deals in bigints. Each also has a `.bits(bits)` form for *packed* layouts, the same as passing `uintItem.bits(bits)`; `boolItem.bits()` defaults to a single bit.
 
 ```typescript
 deserialize(boolItem(), new Uint8Array([2]));                     //=> throws
 deserialize(boolItem({ permissive: true }), new Uint8Array([2])); //=> true
 serialize(boolItem({ size: 4, endianness: "little" }), true);     //=> new Uint8Array([1, 0, 0, 0])
+serialize(boolItem(intItem(2)), true);                            //=> new Uint8Array([0, 1])
 ```
-
-### Padding
-
-`paddingItem(size)` is `size` constant zero bytes; `paddingItem.bits(n)` is `n` constant zero bits inside *packed* layouts. Both are fixed items and hence absent from derived types, emitted on serialization, and verified zero on deserialization.
 
 ### Enum
 
-Converts a set of string names into their associated numeric values (and rejects unknown values in both directions; names and values must each be distinct, checked at construction, since a repeat would make the mapping non-injective). Implemented via a *uint* item — `enumItem(entries, size?)`, `size` defaulting to 1; `enumItem.bits(entries, bits)` is the bit-width form for *packed* layouts.
+`enumItem(entries, carrier?)` converts a set of string names into their associated integer values, and rejects unknown values in both directions. The values are of the carrier's primitive and must fit it, and names and values must each be distinct, all checked at construction, since a repeat would make the mapping non-injective. A value may also be spelled `"min"` or `"max"`, the carrier's extremes. An enum is closed; for an integer that names a few of its values and passes the rest through, see [Niche](#niche).
 
 ```typescript
 const myEnumItem = enumItem([["foo", 1], ["bar", 3]], { size: 2, endianness: "little" });
@@ -906,9 +909,32 @@ type MyEnum = DeriveType<typeof myEnumItem>;
 //=> "foo" | "bar"
 ```
 
+### Niche
+
+`nicheItem(niches, carrier?)` reserves values of its carrier and surfaces each as a non-numeric primitive (a `NicheValue`: a string, boolean, symbol, `null` or `undefined`), while every other value passes through as the number or bigint the carrier derives — an enum that lets unnamed values through. The name is Rust's: a niche is a value a type never otherwise holds, which is how `Option<NonZeroU32>` encodes `None` in no extra space. The reserved values follow the enum's rules, `"min"` and `"max"` included; serializing one as a plain number throws, since it would read back as its niche.
+
+```typescript
+const indexItem = nicheItem([[undefined, -1]], intItem(2));
+
+type Index = DeriveType<typeof indexItem>; //=> number | undefined
+
+serialize(indexItem, 5);         //=> new Uint8Array([0, 5])
+serialize(indexItem, undefined); //=> new Uint8Array([0xff, 0xff])
+serialize(indexItem, -1);        //=> throws
+
+const timeoutItem = nicheItem([["never", "max"]], 4);
+serialize(timeoutItem, "never"); //=> new Uint8Array([0xff, 0xff, 0xff, 0xff])
+```
+
 ### Option
 
-Default implementation for encoding optional parts of a layout, inspired by Rust's `Option`: a presence byte, followed by the value if present.
+An optional value has three encodings:
+
+* `optionItem(someValue, tag?)`, after Rust's `Option`: a presence tag, followed by the value only if present.
+* `defaultOptionItem(someValue, defaultValue, tag?)`: a presence tag, and a body that keeps its space when absent, holding `defaultValue`'s encoding — the form of C structs and other fixed-layout records. Deserialization verifies the absent body, so an absence has exactly one encoding; `{ permissive: true }` instead reads any bytes of that size as absent, for formats that leave a cleared value's bytes behind.
+* A [niche](#niche) of `undefined`: no tag at all, the absence is a value the integer otherwise never holds.
+
+`someValue` is a [`CustomizableBytes`](#customizablebytes) spec, and `undefined` is the absence, so a payload must not surface it: an option of an option collapses `Some(None)` into `None`. The tag is a *uint* holding 0 or 1, a single byte by default; `tag` takes a size or `{ size, endianness }`, which for `defaultOptionItem` also holds `permissive`. The results are `OptionItem<T, O>` and `DefaultOptionItem<T, O>`.
 
 ```typescript
 const myOptionItem = optionItem(uintItem(2));
@@ -917,11 +943,15 @@ type MyOption = DeriveType<typeof myOptionItem>; //=> number | undefined
 
 serialize(myOptionItem, undefined); //=> new Uint8Array([0])
 serialize(myOptionItem, 42);        //=> new Uint8Array([1, 0, 42])
+
+const myDefaultOptionItem = defaultOptionItem(uintItem(2), 0, { size: 4, endianness: "little" });
+serialize(myDefaultOptionItem, undefined); //=> new Uint8Array([0, 0, 0, 0, 0, 0])
+serialize(myDefaultOptionItem, 42);        //=> new Uint8Array([1, 0, 0, 0, 0, 42])
 ```
 
 ### Timestamp
 
-Converts an unsigned on-wire count into a `Date`. Parameterized by `unit` (`"s"` default, or `"ms"`), `size` (default 4), `endianness`, `origin` (the instant counts are measured from — unix epoch by default, so NTP-1900- or GPS-1980-style epochs are one option away), and `saturateAs`: a sentinel value that replaces out-of-range throws — too-late instants encode to the field's maximum, and the maximum (like any count past what `Date` can represent) decodes back to the sentinel, matching the near-universal convention of reading an all-ones timestamp as "no expiry".
+Converts an unsigned on-wire count into a `Date`. Parameterized by `unit` (`"s"` default, or `"ms"`), `size` (default 4), `endianness`, `origin` (the instant counts are measured from — unix epoch by default, so NTP-1900- or GPS-1980-style epochs are one option away), and `saturateAs`: a sentinel value that replaces out-of-range throws — too-late instants encode to the field's maximum, and the maximum (like any count past what `Date` can represent) decodes back to the sentinel, matching the near-universal convention of reading an all-ones timestamp as "no expiry". `saturateFrom` moves that ceiling below the maximum, for a field wider than the counts it carries: the sentinel and too-late instants then encode to the ceiling, and every count from it upward decodes to the sentinel. It takes a count in the field's own units and comes only with a sentinel.
 
 The options follow the factories' `Opts` convention (an explicitly `undefined` option is unset) except `saturateAs`, where `undefined` is a legitimate sentinel: the key's presence declares one. An option that may be `undefined` types as both outcomes — `timestampItem({ size: maybe8 })` has size `4 | 8` — and a `saturateAs` that may be `undefined` is a sentinel that may be `undefined`. `timestampConversion` takes the same options without `endianness`, since a conversion has no byte order. The option records are `TimestampOpts` and `TimestampConversionOpts` (`unit` a `TimeUnit`), the results `TimestampItem<O>` and `TimestampConversion<O>`.
 

@@ -1,14 +1,12 @@
 import type { Address } from "viem";
 import type { OptionalArg } from "@onrail-xyz/utils";
-import { utf8Conversion, withCustom } from "@onrail-xyz/binary-layout";
 import type { KindWithAtomic } from "@onrail-xyz/amount";
 import { paddedSlotLayout, evmAmountItem,
-         abiEncodedBytesItem, sigVariant, addressParam, amountParam } from "./layouting.js";
+         abiStringItem, sigVariant, addressParam, amountParam } from "./layouting.js";
 import type { ContractMethods } from "./client.js";
 import { abiFunction, contractFromSpec } from "./client.js";
 
-const abiStringItem = withCustom(abiEncodedBytesItem(), utf8Conversion);
-const decimalsItem  = paddedSlotLayout({ binary: "uint", size: 1 } as const);
+const decimalsItem = paddedSlotLayout({ binary: "uint", size: 1 } as const);
 
 const from    = addressParam("from"   );
 const to      = addressParam("to"     );

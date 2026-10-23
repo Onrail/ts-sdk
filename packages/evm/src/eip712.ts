@@ -1,6 +1,6 @@
 import type { Address, Hex } from "viem";
 import type { RoUint8Array, RoArray, StrRecord, Simplify, DeepRo } from "@onrail-xyz/utils";
-import { bytes, hex, utf8 } from "@onrail-xyz/utils";
+import { bytes, hex, utf8, mapValues } from "@onrail-xyz/utils";
 import type { Layout, Item, DeriveType } from "@onrail-xyz/binary-layout";
 import { serialize } from "@onrail-xyz/binary-layout";
 import { hashItem } from "@onrail-xyz/common";
@@ -70,7 +70,7 @@ export const toViemTypedData = <T>(value: T): ViemTypedData<T> => (
   : Array.isArray(value)
   ? value.map(toViemTypedData)
   : typeof value === "object" && value !== null
-  ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, toViemTypedData(v)]))
+  ? mapValues(value as StrRecord, toViemTypedData)
   : value
 ) as ViemTypedData<T>;
 
@@ -194,22 +194,23 @@ const guessDomainSeparatorVersion = (
   throw new Error("Could not determine domain separator version");
 };
 
-//reconstructs the EIP-712 domain from on-chain data, guesses the version if needed
+//reconstructs the EIP-712 domain from on-chain data, guesses the version if needed; the chain id
+//  is taken as viem reports it or as a word, and returned as the domain's uint256 word
 export const guessEip712Domain = (
   name:              string,
   verifyingContract: Address,
-  chainId:           bigint,
+  chainId:           number | bigint,
   domainSeparator:   RoUint8Array,
   versionGuesses:    RoArray<string> = ["1", "2", "0"],
 ) => {
-  const known = { name: hashString(name), chainId, verifyingContract } as const;
+  const known = { name: hashString(name), chainId: BigInt(chainId), verifyingContract } as const;
   return {
     name,
     ...(matchesHash(unversionedLayout, known, domainSeparator)
       ? {}
       : { version: guessDomainSeparatorVersion(known, domainSeparator, versionGuesses) }
     ),
-    chainId,
+    chainId: known.chainId,
     verifyingContract,
   } as const;
 };

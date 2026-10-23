@@ -4,7 +4,7 @@ import type { RoUint8Array } from "@onrail-xyz/utils";
 import type { DeriveType } from "../src/index.js";
 import { uintItem, bytesItem,
          customizableBytes, utf8Conversion, deserialize } from "../src/index.js";
-import { pinEq } from "./typeAssert.js";
+import { pinEq, typeOnly } from "./typeAssert.js";
 
 //regression: declared `opts?: O`, an opts variable typed `X | undefined` inferred O = X - the `?`
 //  absorbed the undefined - so the item's type claimed X's fields (a fixed value, say) that the
@@ -13,9 +13,9 @@ describe("an opts record that may be absent", () => {
   it("is rejected, as the item's shape would depend on it", () => {
     const maybeOpts = undefined as { fixed: 3 } | undefined;
     // @ts-expect-error - O's constraint does not admit undefined
-    uintItem(1, maybeOpts);
+    typeOnly(() => uintItem(1, maybeOpts));
     // @ts-expect-error - likewise for a width-or-opts argument
-    bytesItem(undefined as 4 | undefined);
+    typeOnly(() => bytesItem(undefined as 4 | undefined));
     const fixed = uintItem(1, { fixed: 3 }), plain = uintItem(1);
     pinEq<DeriveType<typeof fixed>, undefined>(true);
     pinEq<DeriveType<typeof plain>, number>(true);

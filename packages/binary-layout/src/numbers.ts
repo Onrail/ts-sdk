@@ -49,13 +49,41 @@ export const fitsInBits: {
   (val: bigint, bits: number,     signed: boolean): boolean,
 } = _fitsInBits;
 
+const intTypeName = (bits: number, signed: boolean) => `${signed ? "i" : "u"}${bits}`;
+
+const _checkFitsInBits =
+  (val: NumType, bits: number, signed: boolean, subject: string = "Value"): void => {
+    if (!_fitsInBits(val, bits, signed))
+      throw new Error(`${subject} ${val} does not fit in ${intTypeName(bits, signed)}`);
+  };
+
 //the guard form, naming the width the way an integer type is named
 export const checkFitsInBits: {
   (val: number, bits: NumberBits, signed: boolean, subject?: string): void,
   (val: bigint, bits: number,     signed: boolean, subject?: string): void,
-} = (val: NumType, bits: number, signed: boolean, subject: string = "Value"): void => {
-  if (!_fitsInBits(val, bits, signed))
-    throw new Error(`${subject} ${val} does not fit in ${signed ? "i" : "u"}${bits}`);
+} = _checkFitsInBits;
+
+//stricter than the guard: the value must also be of the primitive the width derives
+export const checkInDomain =
+  (val: NumType, bits: number, signed: boolean, subject: string): void => {
+    const primitive = bits > numberMaxBits ? "bigint" : "number";
+    if (typeof val !== primitive)
+      throw new Error(`${subject} ${val} is a ${typeof val}, ` +
+                      `but ${intTypeName(bits, signed)} derives a ${primitive}`);
+
+    _checkFitsInBits(val, bits, signed, subject);
+  };
+
+//in the primitive the width derives
+export const domainBounds = (bits: number, signed: boolean): RoPair<NumType, NumType> => {
+  const exp = bits - (signed ? 1 : 0);
+  if (bits > numberMaxBits) {
+    const bound = 1n << BigInt(exp);
+    return [signed ? -bound : 0n, bound - 1n];
+  }
+
+  const bound = twoTo(exp);
+  return [signed ? -bound : 0, bound - 1];
 };
 
 export function serializeNum(

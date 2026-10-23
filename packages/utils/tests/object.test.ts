@@ -1,9 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { Merge, FromEntries } from "../src/object.js";
-import { pick, omit, omitUndefined, replace, merge,
+import { pick, omit, omitUndefined, replace, mapValues, merge,
          spread, nest, deepOmit, deepReplace, anyKey, fromEntries } from "../src/object.js";
-import { pinEq } from "./typeAssert.js";
+import { pinEq, typeOnly } from "./typeAssert.js";
 import { zip } from "../src/array.js";
 
 //the property merge exists for: it is built from mapped types, so it stays deferred over an open
@@ -84,6 +84,35 @@ describe("omitUndefined", () => {
   });
 });
 
+describe("mapValues", () => {
+  it("maps each value under its key", () => {
+    const mapped = mapValues({ a: 1, b: 2 }, (value, key) => `${key}${value * 10}`);
+    pinEq<typeof mapped, { readonly a: string; readonly b: string }>(true);
+    assert.deepEqual(mapped, { a: "a10", b: "b20" });
+  });
+
+  it("keeps optional keys optional and absent keys absent", () => {
+    const partial = { a: 1 } as { a: 1; b?: 2 };
+    const mapped = mapValues(partial, value => value === undefined);
+    pinEq<typeof mapped, { a: boolean; b?: boolean }>(true);
+    assert.deepEqual(Reflect.ownKeys(mapped), ["a"]);
+  });
+
+  it("drops symbol keys and passes numeric keys as strings", () => {
+    const sym = Symbol("sym");
+    const keys: string[] = [];
+    const mapped = mapValues({ [sym]: "s", 1: "n" }, (value, key) => {
+      pinEq<typeof value, "n">(true);
+      pinEq<typeof key, "1">(true);
+      keys.push(key);
+      return value;
+    });
+    pinEq<typeof mapped, { readonly 1: "n" }>(true);
+    assert.deepEqual(keys, ["1"]);
+    assert.deepEqual(Reflect.ownKeys(mapped), ["1"]);
+  });
+});
+
 describe("replace / merge / spread / nest", () => {
   it("replace swaps a value", () => {
     assert.deepEqual(replace({ a: 1, b: 2 }, "a", "new"), { a: "new", b: 2 });
@@ -122,20 +151,19 @@ describe("replace / merge / spread / nest", () => {
   // now rejected at the signature.
   it("spread/nest reject collisions and non-object spreads at compile time", () => {
     // @ts-expect-error - nested "a" collides with the outer "a"
-    const bannedCollision = () => spread({ a: 1, n: { a: 2 } }, "n");
+    typeOnly(() => spread({ a: 1, n: { a: 2 } }, "n"));
     // @ts-expect-error - "n" does not hold a plain object
-    const bannedPrimitive = () => spread({ a: 1, n: 2 }, "n");
+    typeOnly(() => spread({ a: 1, n: 2 }, "n"));
     // @ts-expect-error - new key "a" collides with the remaining outer "a"
-    const bannedNest = () => nest({ a: 1, b: 2 }, "a", "b");
+    typeOnly(() => nest({ a: 1, b: 2 }, "a", "b"));
     // Regression: IsPlain used to answer "some union member is plain" (and went indeterminate
     // on object|primitive unions), so union-typed fields slipped through SpreadableKeys.
     const mixedPrim = { a: 1, n: { b: 2 } } as { a: 1; n: { b: 2 } | string };
     // @ts-expect-error - "n" may hold a primitive at runtime
-    const bannedMixedPrimitive = () => spread(mixedPrim, "n");
+    typeOnly(() => spread(mixedPrim, "n"));
     const mixedArr = { a: 1, n: { b: 2 } } as { a: 1; n: { b: 2 } | readonly number[] };
     // @ts-expect-error - "n" may hold an array at runtime
-    const bannedMixedArray = () => spread(mixedArr, "n");
-    void [bannedCollision, bannedPrimitive, bannedNest, bannedMixedPrimitive, bannedMixedArray];
+    typeOnly(() => spread(mixedArr, "n"));
   });
 });
 
@@ -333,7 +361,7 @@ describe("fromEntries", () => {
 
 // ---- Get ----
 
-import type { Get, TrueKeys } from "../src/object.js";
+import type { Get, GetOpt, TrueKeys } from "../src/object.js";
 
 pinEq<Get<{ readonly a: 1 }, "a">, 1>(true);
 pinEq<Get<{ a: 1 }, "b">, undefined>(true);
@@ -343,6 +371,15 @@ pinEq<Get<{ a?: 1 }, "a">, undefined>(true);
 pinEq<Get<{ a: undefined }, "a">, undefined>(true);
 //the Record clause distributes the lookup over object unions
 pinEq<Get<{ a: 1 } | { b: 2 }, "a">, 1 | undefined>(true);
+
+// ---- GetOpt ----
+
+pinEq<GetOpt<{ readonly a: 1 }, "a">, 1>(true);
+pinEq<GetOpt<{ a: 1 }, "b">, undefined>(true);
+//where Get diverges: an optional key may be present, so it yields its type
+pinEq<GetOpt<{ a?: 1 }, "a">, 1 | undefined>(true);
+pinEq<GetOpt<{ a: 1 } | { b: 2 }, "a">, 1 | undefined>(true);
+pinEq<GetOpt<{ a: 1 } | { b: 2 }, "a", never>, 1>(true);
 
 // ---- TrueKeys ----
 
