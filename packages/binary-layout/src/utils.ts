@@ -1,5 +1,5 @@
 import type { RoUint8Array, RoArray, RoPair } from "@onrail-xyz/utils";
-import { isUint8Array } from "@onrail-xyz/utils";
+import { isUint8Array, raise } from "@onrail-xyz/utils";
 import type { Layout, Item, Struct, NumType, NumberSize,
               NumSizeToPrimitive, NumBitsToPrimitive, Endianness,
               Conversion, ArrayItem, SwitchItem, SwitchVariant, VariantId } from "./layout.js";
@@ -9,7 +9,7 @@ import { binaryLiterals, numberMaxSize, numberMaxBits, bitsPerByte } from "./lay
 //  through multiplication/division instead
 export const byteMulShift = 256;
 
-const isNumType = (x: unknown): x is NumType =>
+export const isNumType = (x: unknown): x is NumType =>
   typeof x === "number" || typeof x === "bigint";
 
 //the byte sizes the number path carries, i.e. those readNum derives a `number` for
@@ -273,11 +273,9 @@ function variantIndexOf(item: SwitchItem): VariantIndex {
 //variant lookup by deserialized wire id
 export function findVariantByRawId(item: SwitchItem, rawId: NumType): SwitchVariant {
   const index = variantIndexOf(item);
-  const variant = index.byRawId.get(rawId) ?? findRange(index.ranges, rawId);
-  if (variant === undefined)
-    throw new Error(`unknown id value: ${rawId}`);
-
-  return variant;
+  return index.byRawId.get(rawId)
+    ?? findRange(index.ranges, rawId)
+    ?? raise(`unknown id value: ${rawId}`);
 }
 
 //whether a tag value routes to the variant: a range takes the wire values it spans, a renamed

@@ -308,7 +308,7 @@ The quotient of two amounts of one kind is `ratio`, not a `div` overload. A gene
 Scalar kinds also compose into `Rate`s like any other kind — this is how dimensions like "per time" are expressed:
 
 ```typescript
-const apr = percent(5).per(Amount.parse("365 days", Duration));  // Rate<Percentage, Duration>
+const apr = percent(5).per(Amount.parse("365 days", Duration));  // Rate<typeof Percentage, typeof Duration>
 ```
 
 #### Helpers
@@ -478,7 +478,7 @@ Both modes render in the same unit and differ only in digits. The unit is the la
 
 ### Rate
 
-A `Rate` represents a ratio between two `Kind`s (e.g., a price): `Rate<USD, ETH>` reads "USD per ETH". The two must be distinct kinds — a ratio within one kind is dimensionless, which is what `Rational` is for — so `Rate.from` and `per` reject a matching pair.
+A `Rate` represents a ratio between two `Kind`s (e.g., a price): `Rate<typeof USD, typeof ETH>` reads "USD per ETH". The two must be distinct kinds — a ratio within one kind is dimensionless, which is what `Rational` is for — so `Rate.from` and `per` reject a matching pair.
 
 ```typescript
 // Creation

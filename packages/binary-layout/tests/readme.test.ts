@@ -8,12 +8,11 @@ import type { Brand, RoUint8Array, RoArray,
               RoPair, Existential, OptionalArg } from "@onrail-xyz/utils";
 import type { DeriveType, Layout, Conversion, CustomizableBytes } from "../src/index.js";
 import { serialize, deserialize, calcSize, calcStaticSize,
-         buildDiscriminator, buildDeserializer,
-         setEndianness, withCustom, pin, uintItem, intItem,
-         bytesItem, arrayItem, packedItem, switchItem,
-         boolItem, paddingItem, enumItem, nicheItem,
-         optionItem, defaultOptionItem, timestampItem,
-         codecItem, brandConversion, utf8Conversion,
+         buildDiscriminator, buildDeserializer, setEndianness,
+         withCustom, pin, uintItem, intItem, bytesItem, arrayItem,
+         packedItem, switchItem, boolItem, paddingItem, enumItem,
+         nicheItem, aliasItem, optionItem, defaultOptionItem,
+         timestampItem, codecItem, brandConversion, utf8Conversion,
          customizableBytes, leb128Codec, compactU16, rlpUint } from "../src/index.js";
 import { pinEq } from "./typeAssert.js";
 
@@ -473,8 +472,24 @@ describe("README: sugar", () => {
     assert.equal(serialize(indexItem, undefined).toHex(), "ffff");
     assert.throws(() => serialize(indexItem, -1));
 
-    const timeoutItem = nicheItem([["never", "max"]], 4);
-    assert.equal(serialize(timeoutItem, "never").toHex(), "ffffffff");
+    const hexConversion: Conversion<RoUint8Array, string> =
+      { to: bytes => bytes.toHex(), from: str => Uint8Array.fromHex(str) };
+    const slotItem =
+      nicheItem([["any", "ffff"]], { binary: "bytes", size: 2, custom: hexConversion });
+    assert.equal(serialize(slotItem, "any").toHex(), "ffff");
+    assert.throws(() => serialize(slotItem, "FFFF"), /is the niche of any/);
+  });
+
+  it("aliasItem names values without reserving them", () => {
+    const uidItem = aliasItem([["root", 0]], 4);
+    pinEq<DeriveType<typeof uidItem>, number | "root">(true);
+    assert.equal(serialize(uidItem, "root").toHex(), "00000000");
+    assert.equal(deserialize(uidItem, serialize(uidItem, 0)), "root");
+
+    const chownUidItem = aliasItem([["root", 0]], nicheItem([[undefined, "max"]], 4));
+    pinEq<DeriveType<typeof chownUidItem>, number | undefined | "root">(true);
+    assert.equal(deserialize(chownUidItem, serialize(chownUidItem, 0)), "root");
+    assert.throws(() => serialize(chownUidItem, 0xffffffff), /is the niche of undefined/);
   });
 
   it("optionItem encodes presence with a leading byte, defaultOptionItem keeps the space", () => {

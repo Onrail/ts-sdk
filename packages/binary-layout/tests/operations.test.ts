@@ -2,12 +2,13 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import type { RoUint8Array, Brand } from "@onrail-xyz/utils";
 import type { DeriveType, Layout, Conversion, CustomizableBytes } from "../src/index.js";
-import { serialize, deserialize, setEndianness, withCustom,
-         pin, pipedConversion, spreadLayout, unwrapSingleton,
-         buildDiscriminator, buildDeserializer, hasFixed, hasAs,
-         hasCustom, uintItem, intItem, bytesItem, arrayItem,
-         packedItem, switchItem, codecItem, customizableBytes,
-         paddingItem, boolItem, enumItem, nicheItem, optionItem,
+import { serialize, deserialize,
+         setEndianness, withCustom, pin, pipedConversion,
+         spreadLayout, unwrapSingleton, buildDiscriminator,
+         buildDeserializer, hasFixed, hasAs, hasCustom,
+         uintItem, intItem, bytesItem, arrayItem, packedItem,
+         switchItem, codecItem, customizableBytes, paddingItem,
+         boolItem, enumItem, nicheItem, aliasItem, optionItem,
          defaultOptionItem, brandConversion, utf8Conversion, compactU16 } from "../src/index.js";
 import { pinEq, typeOnly } from "./typeAssert.js";
 
@@ -632,8 +633,104 @@ describe("item factories", () => {
     typeOnly(() => nicheItem([[5, 1]]));
     // @ts-expect-error - a raw niche is in the carrier's primitive
     assert.throws(() => nicheItem([[undefined, 1]], 8), /is a number, but u64 derives a bigint/);
-    // @ts-expect-error - the carrier is a plain integer
-    typeOnly(() => nicheItem([[undefined, 2]], boolItem()));
+    // @ts-expect-error - a pinned carrier has no values to reserve
+    typeOnly(() => nicheItem([[undefined, "max"]], uintItem(1, { fixed: 2 })));
+    // @ts-expect-error - nor bytes that derive a layout
+    typeOnly(() => nicheItem([[undefined, 2]], bytesItem({ layout: uintItem(1) })));
+    assert.throws(() => nicheItem([[null, new Uint8Array(3)]], bytesItem(4)),
+                  /size mismatch: layout size: 4, data size: 3/);
+    assert.throws(() => nicheItem([[null, new Uint8Array(2)], [undefined, new Uint8Array(2)]],
+                                  bytesItem(2)),
+                  /not distinct/);
+  });
+
+  it("niche reserves bytes by content", () => {
+    const word = nicheItem([[null, new Uint8Array(4)]], bytesItem(4));
+    pinEq<DeriveType<typeof word>, RoUint8Array | null>(true);
+    assert.equal(serialize(word, null).toHex(), "00000000");
+    assert.equal(deserialize(word, new Uint8Array(4)), null);
+    assert.deepEqual(deserialize(word, new Uint8Array([0, 0, 0, 1])), new Uint8Array([0, 0, 0, 1]));
+    //a fresh array with the niche's content is still the niche
+    assert.throws(() => serialize(word, new Uint8Array(4)), /is the niche of null/);
+    // @ts-expect-error - a bare carrier passes only its raw values through
+    typeOnly(() => serialize(word, "0x00"));
+  });
+
+  it("niche surfaces the rest through the carrier's own conversion", () => {
+    const hexConversion: Conversion<RoUint8Array, string> = {
+      to:   bytes => bytes.toHex(),
+      from: str   => Uint8Array.fromHex(str),
+    };
+    const hexWord = { binary: "bytes", size: 2, custom: hexConversion } as const;
+    const slot = nicheItem([["any", "ffff"]], hexWord);
+    pinEq<DeriveType<typeof slot>, string>(true);
+    assert.equal(serialize(slot, "any").toHex(), "ffff");
+    assert.equal(serialize(slot, "00ab").toHex(), "00ab");
+    assert.equal(deserialize(slot, new Uint8Array([0xff, 0xff])), "any");
+    assert.equal(deserialize(slot, new Uint8Array([0, 0xab])), "00ab");
+    //reserved by encoding, not by spelling
+    assert.throws(() => serialize(slot, "FFFF"), /FFFF is the niche of any/);
+
+    //an integer carrier converts too: a bool with a third state
+    const tristate = nicheItem([["unknown", "max"]], boolItem());
+    pinEq<DeriveType<typeof tristate>, boolean | "unknown">(true);
+    assert.equal(serialize(tristate, "unknown").toHex(), "ff");
+    assert.equal(serialize(tristate, true).toHex(), "01");
+    assert.equal(deserialize(tristate, new Uint8Array([0xff])), "unknown");
+    assert.throws(() => deserialize(tristate, new Uint8Array([2])), /Invalid bool value/);
+
+    //min/max are the carrier's own spelling where it has one: the enum's "max" was the
+    //  domain extreme 0xff, leaving the enum's max (2) unnameable
+    const level = enumItem([["min", 0], ["mid", 1], ["max", 2]]);
+    const top = aliasItem([["top", "max"], ["floor", "min"]], level);
+    assert.equal(serialize(top, "top").toHex(), "02");
+    assert.equal(serialize(top, "floor").toHex(), "00");
+    assert.equal(deserialize(top, new Uint8Array([2])), "top");
+  });
+
+  it("niche names must not be values of a converted carrier", () => {
+    //true would serialize as the niche, so the raw 1 would read back as a value written as 0xff
+    assert.throws(() => nicheItem([[true, "max"]], boolItem()),
+                  /Niche true is a value of the carrier/);
+    const text = { binary: "bytes", custom: utf8Conversion } as const;
+    assert.throws(() => aliasItem([["none", ""]], text), /Alias none is a value/);
+    const maybeText = nicheItem([[null, ""]], text);
+    assert.equal(deserialize(maybeText, serialize(maybeText, "a")), "a");
+    assert.throws(() => serialize(maybeText, ""), /is the niche of null/);
+    //an alias over a niche must not reuse the niche's name
+    assert.throws(() => aliasItem([[null, "x"]], maybeText), /Alias null is a value/);
+  });
+
+  it("an alias names a value without reserving it", () => {
+    const max = 2n ** 256n - 1n;
+    const allowance = aliasItem([["unlimited", "max"]], 32);
+    pinEq<DeriveType<typeof allowance>, bigint | "unlimited">(true);
+    assert.equal(serialize(allowance, "unlimited").toHex(), "ff".repeat(32));
+    //the plain spelling is the same value, and reads back as its name
+    assert.equal(serialize(allowance, max).toHex(), "ff".repeat(32));
+    assert.equal(deserialize(allowance, serialize(allowance, max)), "unlimited");
+    assert.equal(deserialize(allowance, serialize(allowance, 5n)), 5n);
+    assert.throws(() => aliasItem([[undefined, 256]]), /Alias 256 does not fit in u8/);
+    assert.throws(() => aliasItem([[undefined, 1], [null, 1]]), /not distinct/);
+    // @ts-expect-error - a bare carrier passes only its raw values through
+    typeOnly(() => serialize(aliasItem([[null, 1]]), "x"));
+  });
+
+  it("an alias layers over a niche", () => {
+    const zero = new Uint8Array(2);
+    const word = aliasItem([["max", new Uint8Array([0xff, 0xff])]],
+                           nicheItem([[null, zero]], bytesItem(2)));
+    pinEq<DeriveType<typeof word>, RoUint8Array | null | "max">(true);
+    assert.equal(serialize(word, "max").toHex(), "ffff");
+    assert.equal(deserialize(word, serialize(word, new Uint8Array([0xff, 0xff]))), "max");
+    assert.equal(serialize(word, null).toHex(), "0000");
+    assert.equal(deserialize(word, zero), null);
+    assert.throws(() => serialize(word, new Uint8Array(2)), /is the niche of null/);
+    //an alias spells its value as the carrier surfaces it: the reserved raw is null, never bytes
+    assert.throws(() => aliasItem([["zero", zero]], nicheItem([[null, zero]], bytesItem(2))),
+                  /is the niche of null/);
+    const zeroWord = aliasItem([["zero", null]], nicheItem([[null, zero]], bytesItem(2)));
+    assert.equal(deserialize(zeroWord, serialize(zeroWord, null)), "zero");
   });
 
   it("enum and bool take their carrier in the width slot", () => {

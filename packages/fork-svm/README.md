@@ -276,7 +276,7 @@ const {
 
 // Now with nicer ergonomics
 await airdrop(wallet, sol(0.1));
-const balance = await getBalance(wallet); // Amount<Sol>
+const balance = await getBalance(wallet); // Amount<SolKind>
 const ata = createAta(wallet, usdcMint, usdc(100));
 await createAndSendTx(instructions, feePayer, additionalSigners, alts);
 ```

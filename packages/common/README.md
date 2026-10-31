@@ -60,7 +60,7 @@ For prices and exchange rates – derives a `Rate`, as a `RateItem<S, NK, DK>`. 
 
 ```typescript
 // Wrap an existing amountItem: a SOL price, stored as cents per SOL
-const priceItem = rateItem(amountItem(8, Usd, "¢"), Sol);  // => derives Rate<Usd, Sol>
+const priceItem = rateItem(amountItem(8, Usd, "¢"), Sol);  // => derives Rate<UsdKind, SolKind>
 
 // Or build from scratch: size, numKind, numUnit, denKind, [denUnit], [transform]
 rateItem(8, Usd, "¢", Sol);                                // => the same item
@@ -93,7 +93,7 @@ The kinds above are spelled with `@onrail-xyz/amount`'s [unit-definition helpers
 
 ```typescript
 fromAtomicIfKind(1_000_000n);       // => 1_000_000n (no kind, returns bigint)
-fromAtomicIfKind(1_000_000n, Sol);  // => Amount<Sol> (=0.001 SOL)
+fromAtomicIfKind(1_000_000n, Sol);  // => Amount<SolKind> (=0.001 SOL)
 
 toAtomicIfAmount(1_000_000n);       // => 1_000_000n
 toAtomicIfAmount(sol(1));           // => 1_000_000_000n (floored atomic value)

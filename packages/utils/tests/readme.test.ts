@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import type { ConstMap, MapLevels, ShapeLike, Brand,
               ExtractTags, PreserveBrand, SameBrand, Get, Identity,
               Ro, DeepRo, ApplyAliases, SuppressExpansion, Simplify } from "../src/index.js";
-import { mapTo, entries, valueIndexEntries, range, flatten, chunk, zip,
-         column, pickWithOrder, filterIndexes, pick, omit, omitUndefined,
-         replace, mapValues, merge, spread, nest, deepOmit, deepReplace,
-         anyKey, fromEntries, constMap, mappingRows, uppercase,
-         lowercase, capitalize, uncapitalize, otherCap, stripPrefix, pipe,
-         identity, raise, tap, tryOr, map, fallback, ensure, forbid, brand } from "../src/index.js";
+import { mapTo, entries, valueIndexEntries, range, flatten,
+         chunk, zip, column, pickWithOrder, filterIndexes, pick,
+         omit, omitUndefined, replace, mapValues, merge, spread,
+         nest, deepOmit, deepReplace, anyKey, fromEntries,
+         constMap, mappingRows, uppercase, lowercase,
+         capitalize, uncapitalize, otherCap, stripPrefix, pipe,
+         identity, raise, tap, tryOr, map, fallback, ensure,
+         forbid, brand, assertEqual, assertDistinct, valueEquals } from "../src/index.js";
 import type { Assert } from "./typeAssert.js";
 import { pinEq, typeOnly } from "./typeAssert.js";
 
@@ -311,3 +313,22 @@ pinEq<ApplyAliases<LetterAliases, Letter>, keyof AllLetters>(true);
 pinEq<ApplyAliases<LetterAliases, "a" | "e" | "f">, keyof Vowels | "f">(true);
 //regression: an empty registry collapsed the union to never
 pinEq<ApplyAliases<{}, "a" | "b">, "a" | "b">(true);
+
+describe("ReadMe Assertions", () => {
+  it("assertEqual and assertDistinct throw on failure", () => {
+    assertEqual(1, 1);
+    assert.throws(() => assertEqual(1, 2), /Expected 1 to equal 2/);
+    assert.throws(() => assertEqual(1, 2, "custom message"), /custom message/);
+
+    assertDistinct(1, 2, 3);
+    assert.throws(() => assertDistinct(1, 2, 2), /Values are not distinct: 1, 2, 2/);
+  });
+
+  it("assertDistinct compares by valueEquals: SameValueZero, bytes by content", () => {
+    assert(valueEquals(NaN, NaN));
+    assert(valueEquals(0, -0));
+    assert(valueEquals(new Uint8Array([1]), new Uint8Array([1])));
+    assert(!valueEquals([1], [1]));
+    assert.throws(() => assertDistinct(new Uint8Array([1]), new Uint8Array([1])));
+  });
+});

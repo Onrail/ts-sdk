@@ -164,7 +164,7 @@ That's the tour. The rest is the manual — one front-to-back read pays off, but
 * [Engine Functions](#engine-functions) — `serialize`, `deserialize`, sizing
 * [More on Automatic Discrimination](#more-on-automatic-discrimination) — discriminators, one-step deserialization, vs *switch*, limitations
 * [Guarantees & Strictness](#guarantees--strictness) — the trust boundary, canonicality, undefined behavior
-* [Additional Items & Sugar](#additional-items--sugar) — padding, bool, enum, niche, option, timestamp, varints, RLP, ...
+* [Additional Items & Sugar](#additional-items--sugar) — padding, bool, enum, niche, alias, option, timestamp, varints, RLP, ...
 * [Operations](#operations) — `withCustom`, `pin`, `spreadLayout`, `unwrapSingleton`, `setEndianness`, tree predicates
 * [Limitations](#limitations)
 * [Future Direction](#future-direction) — spans, `checksummed`, recorded non-goals
@@ -889,7 +889,7 @@ The following are built on top of the primitives above to cover common use cases
 
 `boolItem(carrier?)` converts an integer into a boolean, and is strict by default: only 0 and 1 are valid. `{ permissive: true }` accepts any non-zero value as true.
 
-Bool, [enum](#enum) and [niche](#niche) each put a conversion on an integer, the carrier, and share one slot for it. A size (default 1) or `{ size, endianness }` makes it a *uint* of any width — the multi-byte booleans C ABIs are fond of included — and an integer item without `fixed`/`as`/`custom` (a `NumCarrier`) takes it whole, signed or `bits` alike, `{ carrier: item }` being the same with room for `permissive`. The conversion runs in the carrier's primitive, so a carrier wider than 6 bytes or 53 bits deals in bigints. Each also has a `.bits(bits)` form for *packed* layouts, the same as passing `uintItem.bits(bits)`; `boolItem.bits()` defaults to a single bit.
+Bool, [enum](#enum), [niche](#niche) and [alias](#alias) each put a conversion on an integer, the carrier, and share one slot for it. A size (default 1) or `{ size, endianness }` makes it a *uint* of any width — the multi-byte booleans C ABIs are fond of included — and an integer item without `fixed`/`as`/`custom` (a `NumCarrier`; a niche takes [more](#niche)) takes it whole, signed or `bits` alike, `{ carrier: item }` being the same with room for `permissive`. The conversion runs in the carrier's primitive, so a carrier wider than 6 bytes or 53 bits deals in bigints. Each also has a `.bits(bits)` form for *packed* layouts, the same as passing `uintItem.bits(bits)`; `boolItem.bits()` defaults to a single bit.
 
 ```typescript
 deserialize(boolItem(), new Uint8Array([2]));                     //=> throws
@@ -911,7 +911,9 @@ type MyEnum = DeriveType<typeof myEnumItem>;
 
 ### Niche
 
-`nicheItem(niches, carrier?)` reserves values of its carrier and surfaces each as a non-numeric primitive (a `NicheValue`: a string, boolean, symbol, `null` or `undefined`), while every other value passes through as the number or bigint the carrier derives — an enum that lets unnamed values through. The name is Rust's: a niche is a value a type never otherwise holds, which is how `Option<NonZeroU32>` encodes `None` in no extra space. The reserved values follow the enum's rules, `"min"` and `"max"` included; serializing one as a plain number throws, since it would read back as its niche.
+`nicheItem(niches, carrier?)` reserves values of its carrier and surfaces each as a non-numeric primitive (a `NicheValue`: a string, boolean, symbol, `null` or `undefined`), while every other value passes through as the carrier derives it — an enum that lets unnamed values through. The name is Rust's: a niche is a value a type never otherwise holds, which is how `Option<NonZeroU32>` encodes `None` in no extra space. The reserved values follow the enum's rules, `"min"` and `"max"` included; serializing one under its plain spelling throws, since the niche gives that value a meaning the plain spelling lacks — for a name that means the same as its value, see [Alias](#alias).
+
+Beyond the plain integers bool and enum take, a niche's carrier may be bytes without a layout, and either may carry a conversion of its own (a `Carrier`). A niche is then spelled as the carrier surfaces its values and reserved as the raw value that spelling encodes to, so a different spelling of the same encoding (bytes compare by content) is caught as well, and `"min"`/`"max"` name an integer's extremes only where the carrier has no value of that spelling; every other value passes through the carrier's conversion. A niche extends the carrier's values rather than replacing them as bool and enum do, so a name must not be one of them: a raw the carrier reads as `true` would otherwise serialize back as the niche `true`. The non-numeric primitive `NicheValue` keeps names off a bare carrier's values; for a converted carrier the factory rejects any name that round-trips through the carrier's conversion.
 
 ```typescript
 const indexItem = nicheItem([[undefined, -1]], intItem(2));
@@ -922,8 +924,28 @@ serialize(indexItem, 5);         //=> new Uint8Array([0, 5])
 serialize(indexItem, undefined); //=> new Uint8Array([0xff, 0xff])
 serialize(indexItem, -1);        //=> throws
 
-const timeoutItem = nicheItem([["never", "max"]], 4);
-serialize(timeoutItem, "never"); //=> new Uint8Array([0xff, 0xff, 0xff, 0xff])
+const hexConversion: Conversion<RoUint8Array, string> =
+  { to: bytes => bytes.toHex(), from: str => Uint8Array.fromHex(str) };
+const slotItem = nicheItem([["any", "ffff"]], { binary: "bytes", size: 2, custom: hexConversion });
+serialize(slotItem, "any");  //=> new Uint8Array([0xff, 0xff])
+serialize(slotItem, "FFFF"); //=> throws, as it encodes to the niche
+```
+
+### Alias
+
+`aliasItem(aliases, carrier?)` is a niche that does not reserve its values: it takes the same arguments and surfaces each named value under its name, but the plain spelling is the same value, so it serializes as well and reads back as the name. An alias layers over a niche as over any converted carrier, which gives one field both kinds.
+
+```typescript
+const uidItem = aliasItem([["root", 0]], 4);
+
+type Uid = DeriveType<typeof uidItem>; //=> number | "root"
+
+serialize(uidItem, "root");                  //=> new Uint8Array([0, 0, 0, 0])
+deserialize(uidItem, serialize(uidItem, 0)); //=> "root"
+
+//chown's uid argument, where (uid_t)-1 is reserved as "unchanged"
+const chownUidItem = aliasItem([["root", 0]], nicheItem([[undefined, "max"]], 4));
+type ChownUid = DeriveType<typeof chownUidItem>; //=> number | undefined | "root"
 ```
 
 ### Option
@@ -932,7 +954,7 @@ An optional value has three encodings:
 
 * `optionItem(someValue, tag?)`, after Rust's `Option`: a presence tag, followed by the value only if present.
 * `defaultOptionItem(someValue, defaultValue, tag?)`: a presence tag, and a body that keeps its space when absent, holding `defaultValue`'s encoding — the form of C structs and other fixed-layout records. Deserialization verifies the absent body, so an absence has exactly one encoding; `{ permissive: true }` instead reads any bytes of that size as absent, for formats that leave a cleared value's bytes behind.
-* A [niche](#niche) of `undefined`: no tag at all, the absence is a value the integer otherwise never holds.
+* A [niche](#niche) of `undefined`: no tag at all, the absence is a value the carrier otherwise never holds.
 
 `someValue` is a [`CustomizableBytes`](#customizablebytes) spec, and `undefined` is the absence, so a payload must not surface it: an option of an option collapses `Some(None)` into `None`. The tag is a *uint* holding 0 or 1, a single byte by default; `tag` takes a size or `{ size, endianness }`, which for `defaultOptionItem` also holds `permissive`. The results are `OptionItem<T, O>` and `DefaultOptionItem<T, O>`.
 

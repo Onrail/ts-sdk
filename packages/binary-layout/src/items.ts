@@ -1,14 +1,15 @@
 import type { RoUint8Array, RoArray, RoPair, Opts,
               Merge, Get, Brand, Unbrand, OptionalArg } from "@onrail-xyz/utils";
-import { assertDistinct, isUint8Array, merge } from "@onrail-xyz/utils";
-import type { Layout, LayoutObject, Struct,
-              Endianness, BitOrder, Conversion,
+import { assertDistinct, capitalize, identity,
+         isUint8Array, merge, raise, tryOr, valueEquals } from "@onrail-xyz/utils";
+import type { BytesItem, Layout, LayoutObject,
+              Struct, Endianness, BitOrder, Conversion,
               NumType, NumSizeToPrimitive, NumBitsToPrimitive,
               NumberSize, Count, IdItem, NumItem, Surfacing,
               SwitchItem, SwitchVariant, VariantId, VariantBody,
               CodecItem, DeriveType, BinaryLiteral, IntegerLiteral } from "./layout.js";
-import { isItem, isLayout, hasFixed, hasCustom, isRangeId,
-         variantTagMatches, numBitWidth, numBitsToPrimitive } from "./utils.js";
+import { isItem, isLayout, isNumType, hasFixed, hasCustom, isRangeId,
+         checkItemSize, variantTagMatches, numBitWidth, numBitsToPrimitive } from "./utils.js";
 import { checkInDomain, domainBounds } from "./numbers.js";
 import { serialize } from "./serialize.js";
 
@@ -363,17 +364,25 @@ export const paddingItem = Object.assign(
   { bits: <B extends number>(bits: B) => ({ binary: "uint", bits, fixed: 0 } as const) },
 );
 
-// ---- integer carriers ----
+// ---- carriers ----
 
 type UintOpts<S extends number = number> = Opts<{ size: S /*default 1*/, endianness: Endianness }>;
 type PermissiveOpts = Opts<{ permissive: boolean }>;
 
+//an item a carrier slot takes whole: an integer, or bytes without a layout, surfaced through a
+//  conversion of its own or bare; `fixed` and `as` leave no values to convert
+type Unpinned = Readonly<{ fixed?: undefined, as?: undefined }>;
+export type Carrier =
+  | NumItem   & Unpinned
+  | BytesItem & Unpinned & { readonly layout?: undefined };
+
+//the bare integers bool and enum convert
 export type NumCarrier = NumItem & { readonly [K in keyof Surfacing]?: undefined };
 
 type SlotUintOpts<S extends number = number> = UintOpts<S> & { readonly carrier?: never };
-type CarrierOpts = NotAnItem & (
+type CarrierOpts<C extends Carrier> = NotAnItem & (
   | SlotUintOpts
-  | { readonly carrier: NumCarrier } & { readonly [K in keyof UintOpts]?: never }
+  | { readonly carrier: C } & { readonly [K in keyof UintOpts]?: never }
 );
 
 type CarrierSlot<O> =
@@ -392,47 +401,63 @@ const carrierSlot = <const O>(arg: O | undefined): CarrierSlot<O> => (
 
 type SlotUint<O> =
   Merge<SizedNumBase<"uint", WidthOf<O, "size">>, Omit<CarrierSlot<O>, "permissive">>;
-type SizedCarrier<O> =
-  Get<CarrierSlot<O>, "carrier"> extends infer I extends NumCarrier ? I : SlotUint<O>;
-const sizedCarrier = <const O>(arg: O | undefined) => {
-  const { permissive, ...opts } = carrierSlot(arg) as CarrierOpts & PermissiveOpts;
+type SizedCarrier<O, C extends Carrier> =
+  Get<CarrierSlot<O>, "carrier"> extends infer I extends C ? I : SlotUint<O>;
+const sizedCarrier = <const O, C extends Carrier>(arg: O | undefined) => {
+  const { permissive, ...opts } = carrierSlot(arg) as CarrierOpts<C> & PermissiveOpts;
   const carrier =
     opts.carrier ?? merge({ binary: "uint", size: widthOf<O, "size">(opts.size) }, opts);
-  return { carrier: carrier as SizedCarrier<O>, permissive: permissive ?? false };
+  return { carrier: carrier as SizedCarrier<O, C>, permissive: permissive ?? false };
 };
 
 type BitsCarrier<B extends number> = BitsNumBase<"uint", B>;
 
-//DeriveType<I> itself, which tsc can't see to be a NumType while I is open
-type CarrierRaw<I extends NumCarrier> = Extract<DeriveType<I>, NumType>;
+//the raw domain, beneath the carrier's own conversion if it has one
+type CarrierRaw<C extends Carrier> =
+  C extends BytesItem
+  ? RoUint8Array
+  : Get<C, "size"> extends infer S extends number
+  ? NumSizeToPrimitive<S>
+  : NumBitsToPrimitive<Extract<Get<C, "bits">, number>>;
+
+//CarrierRaw<I> itself, which tsc can't see to be a NumType while I is open
+type NumCarrierRaw<I extends NumCarrier> = Extract<CarrierRaw<I>, NumType>;
 
 type Converted<I extends NumCarrier, T> =
-  Merge<{ readonly custom: Conversion<CarrierRaw<I>, T> }, I>;
+  Merge<{ readonly custom: Conversion<NumCarrierRaw<I>, T> }, I>;
 
 const converted = <I extends NumCarrier, T>(
   carrier: I,
-  custom:  Conversion<NoInfer<CarrierRaw<I>>, T>,
+  custom:  Conversion<NoInfer<NumCarrierRaw<I>>, T>,
 ): Converted<I, T> =>
   merge({ custom }, carrier);
 
-type RawSpec<R extends NumType> = R | "min" | "max";
+type RawSpec<R> = R | "min" | "max";
 
 //a raw value the carrier cannot hold is never read back, and a repeat on either side makes the
 //  mapping non-injective - the silent round-trip break checkVariantReachability rejects for
 //  switch variants
-const resolveMapping = <V, R extends NumType>(
-  carrier: NumCarrier,
+const resolveMapping = <V, R extends CarrierRaw<Carrier>>(
+  carrier: Carrier,
   entries: RoArray<RoPair<V, RawSpec<R>>>,
   subject: string,
 ): RoArray<RoPair<V, R>> => {
-  const bits = numBitWidth(carrier);
-  const signed = carrier.binary === "int";
-  const [min, max] = domainBounds(bits, signed) as RoPair<R, R>;
-  const resolved = entries.map(([value, raw]): RoPair<V, R> =>
-    [value, raw === "min" ? min : raw === "max" ? max : raw]
-  );
-  for (const [, raw] of resolved)
-    checkInDomain(raw, bits, signed, subject);
+  let resolved: RoArray<RoPair<V, R>>;
+  if (carrier.binary === "bytes") {
+    resolved = entries as RoArray<RoPair<V, R>>;
+    for (const [, raw] of resolved)
+      checkItemSize(carrier, (raw as RoUint8Array).length);
+  }
+  else {
+    const bits = numBitWidth(carrier);
+    const signed = carrier.binary === "int";
+    const [min, max] = domainBounds(bits, signed) as RoPair<R, R>;
+    resolved = entries.map(([value, spec]): RoPair<V, R> =>
+      [value, spec === "min" ? min : spec === "max" ? max : spec]
+    );
+    for (const [, raw] of resolved)
+      checkInDomain(raw as NumType, bits, signed, subject);
+  }
 
   assertDistinct(...resolved.map(([value]) => value));
   assertDistinct(...resolved.map(([, raw]) => raw));
@@ -465,10 +490,10 @@ const boolConversion = <R extends NumType>(
 type BitsBoolOpts = NotAnItem & Opts<{ bits: number /*default 1*/ }> & PermissiveOpts;
 
 export const boolItem = Object.assign(
-  <const O extends number | NumCarrier | CarrierOpts & PermissiveOpts = {}>(
+  <const O extends number | NumCarrier | CarrierOpts<NumCarrier> & PermissiveOpts = {}>(
     ...[carrierOrOpts]: OptionalArg<O>
-  ): Converted<SizedCarrier<O>, boolean> => {
-    const { carrier, permissive } = sizedCarrier(carrierOrOpts);
+  ): Converted<SizedCarrier<O, NumCarrier>, boolean> => {
+    const { carrier, permissive } = sizedCarrier<O, NumCarrier>(carrierOrOpts);
     return converted(carrier, boolConversion(carrier, permissive));
   },
   { bits: <const O extends number | BitsBoolOpts = {}>(
@@ -494,34 +519,22 @@ const enumConversion = <R extends NumType, const E extends EnumEntries<R>>(
   const valueToName = new Map<NumType, string>(mapping.map(([name, value]) => [value, name]));
   const nameToValue = new Map<string, R>(mapping);
   return {
-    to: encoded => {
-      const name = valueToName.get(encoded);
-      if (name === undefined)
-        throw new Error(`Invalid enum value: ${encoded}`);
-
-      return name;
-    },
-    from: name => {
-      const value = nameToValue.get(name);
-      if (value === undefined)
-        throw new Error(`Invalid enum name: ${name}`);
-
-      return value;
-    },
+    to:   encoded => valueToName.get(encoded) ?? raise(`Invalid enum value: ${encoded}`),
+    from: name    => nameToValue.get(name)    ?? raise(`Invalid enum name: ${name}`),
   };
 };
 
 type EnumItem<E extends EnumEntries, C extends NumCarrier> = Converted<C, E[number][0]>;
 
 export const enumItem = Object.assign(
-  < const E extends EnumEntries<CarrierRaw<SizedCarrier<O>>>,
-    const O extends number | NumCarrier | CarrierOpts = {},
-  >(entries: E, ...[carrierOrOpts]: OptionalArg<O>): EnumItem<E, SizedCarrier<O>> => {
-    const { carrier } = sizedCarrier(carrierOrOpts);
+  < const E extends EnumEntries<NumCarrierRaw<SizedCarrier<O, NumCarrier>>>,
+    const O extends number | NumCarrier | CarrierOpts<NumCarrier> = {},
+  >(entries: E, ...[carrierOrOpts]: OptionalArg<O>): EnumItem<E, SizedCarrier<O, NumCarrier>> => {
+    const { carrier } = sizedCarrier<O, NumCarrier>(carrierOrOpts);
     return converted(carrier, enumConversion(carrier, entries));
   },
   { bits: //the width is required: unlike bool's single bit, no default is natural for an enum
-    < const E extends EnumEntries<CarrierRaw<BitsCarrier<B>>>,
+    < const E extends EnumEntries<NumCarrierRaw<BitsCarrier<B>>>,
             B extends number,
     >(entries: E, bits: B): EnumItem<E, BitsCarrier<B>> => {
       const carrier: BitsCarrier<B> = { binary: "uint", bits };
@@ -532,60 +545,114 @@ export const enumItem = Object.assign(
 
 // ---- niche ----
 
-//non-numeric primitives, so that none collides with a passed-through integer and a Map matches
-//  each by value
+//a niche surfaces some of the carrier's raw values under names and passes the rest through its
+//  conversion: unlike bool and enum, which replace a bare integer's meaning, it extends the
+//  carrier's, so a name must not be one of the carrier's own values. A reserved niche gives its
+//  raw value a meaning the plain spelling lacks, so that spelling is rejected; an alias is an
+//  unreserved niche, whose plain spelling is the same value and reads back as the name
+
+//non-numeric primitives: a Map matches each by value, and none is a bare carrier's value; a
+//  converted carrier's values are excluded at construction
 export type NicheValue = string | boolean | symbol | null | undefined;
-type Niches<R extends NumType = NumType> = RoArray<RoPair<NicheValue, RawSpec<R>>>;
 
-const nicheConversion = <R extends NumType, const N extends Niches<R>>(
-  carrier: NumCarrier,
-  niches:  N,
-): Conversion<R, R | N[number][0]> => {
-  const mapping = resolveMapping<NicheValue, R>(carrier, niches, "Niche");
-  const rawToValue = new Map<NumType, NicheValue>(mapping.map(([value, raw]) => [raw, value]));
-  const valueToRaw = new Map<NicheValue, R>(mapping);
+//a niche is spelled as the carrier surfaces its values, an integer's extremes also as min/max
+//  where the carrier has no value of that spelling
+type NicheSpec<C extends Carrier> =
+  DeriveType<C> | (C extends NumItem ? "min" | "max" : never);
+type Niches<C extends Carrier> = RoArray<RoPair<NicheValue, NicheSpec<C>>>;
+//the internals' niche list: specs are left unknown, as the factory's signature checked each
+//  against its carrier
+type NicheList = RoArray<RoPair<NicheValue, unknown>>;
+
+const nicheConversion = <R extends CarrierRaw<Carrier>, S, const N extends NicheList>(
+  carrier:  Carrier,
+  niches:   N,
+  reserved: boolean,
+): Conversion<R, S | N[number][0]> => {
+  const kind = reserved ? "niche" : "alias";
+  const inner =
+    (carrier.custom ?? { to: identity, from: identity }) as unknown as Conversion<R, S>;
+  //a raw the carrier reads as a name would serialize back as the name's raw. Under the
+  //  conversion contract, a value is the carrier's iff it converts to a raw that converts back
+  //  to it - a raw of the carrier's primitive, as `from` may pass a foreign value through (the
+  //  identity does, and so does a niche for all but its names)
+  const isCarrierValue = tryOr(false)((value: unknown) => {
+    const raw = inner.from(value as S);
+    return (carrier.binary === "bytes" ? isUint8Array(raw) : isNumType(raw)) &&
+           inner.to(raw) === value;
+  });
+  for (const [value] of niches)
+    if (isCarrierValue(value))
+      throw new Error(`${capitalize(kind)} ${String(value)} is a value of the carrier`);
+
+  const isExtreme = (spec: unknown): spec is "min" | "max" =>
+    carrier.binary !== "bytes" && (spec === "min" || spec === "max") && !isCarrierValue(spec);
+  const mapping = resolveMapping<NicheValue, R>(
+    carrier,
+    niches.map(([value, spec]) => [value, isExtreme(spec) ? spec : inner.from(spec as S)]),
+    capitalize(kind),
+  );
+  const nicheOf = (raw: R) => mapping.find(([, nicheRaw]) => valueEquals(nicheRaw, raw));
+  const valueToRaw = new Map<unknown, R>(mapping);
   return {
-    to: raw => rawToValue.has(raw) ? rawToValue.get(raw) as N[number][0] : raw,
+    to: raw => {
+      const niche = nicheOf(raw);
+      return niche !== undefined ? niche[0] as N[number][0] : inner.to(raw);
+    },
     from: value => {
-      if (typeof value === "number" || typeof value === "bigint") {
-        //it would serialize fine and read back as its niche
-        if (rawToValue.has(value))
-          throw new Error(`${value} is the niche of ${String(rawToValue.get(value))}`);
+      if (valueToRaw.has(value))
+        return valueToRaw.get(value)!;
 
-        return value as R;
+      const raw = inner.from(value as S);
+      if (reserved) {
+        const niche = nicheOf(raw);
+        if (niche !== undefined)
+          throw new Error(`${String(value)} is the niche of ${String(niche[0])}`);
       }
-      const raw = valueToRaw.get(value);
-      if (raw === undefined)
-        throw new Error(`Invalid niche: ${String(value)}`);
-
       return raw;
     },
   };
 };
 
-type NicheItem<N extends Niches, C extends NumCarrier> =
-  Converted<C, CarrierRaw<C> | N[number][0]>;
+type NicheItem<N extends NicheList, C extends Carrier> =
+  Merge<{ readonly custom: Conversion<CarrierRaw<C>, DeriveType<C> | N[number][0]> }, C>;
 
-export const nicheItem = Object.assign(
-  < const N extends Niches<CarrierRaw<SizedCarrier<O>>>,
-    const O extends number | NumCarrier | CarrierOpts = {},
-  >(niches: N, ...[carrierOrOpts]: OptionalArg<O>): NicheItem<N, SizedCarrier<O>> => {
-    const { carrier } = sizedCarrier(carrierOrOpts);
-    return converted(carrier, nicheConversion(carrier, niches));
-  },
-  { bits:
-    < const N extends Niches<CarrierRaw<BitsCarrier<B>>>,
-            B extends number,
-    >(niches: N, bits: B): NicheItem<N, BitsCarrier<B>> => {
-      const carrier: BitsCarrier<B> = { binary: "uint", bits };
-      return converted(carrier, nicheConversion(carrier, niches));
-    },
-  },
+const niched = <C extends Carrier, const N extends NicheList>(
+  carrier:  C,
+  niches:   N,
+  reserved: boolean,
+): NicheItem<N, C> => merge(
+  { custom: nicheConversion<CarrierRaw<C>, DeriveType<C>, N>(carrier, niches, reserved) },
+  carrier,
 );
+
+//named, as nicheItem and aliasItem are instantiations of it - see numFactory
+type SizedNicheFactory =
+  < const N extends Niches<SizedCarrier<O, Carrier>>,
+    const O extends number | Carrier | CarrierOpts<Carrier> = {},
+  >(niches: N, ...[carrierOrOpts]: OptionalArg<O>) => NicheItem<N, SizedCarrier<O, Carrier>>;
+type BitsNicheFactory =
+  < const N extends Niches<BitsCarrier<B>>,
+            B extends number,
+  >(niches: N, bits: B) => NicheItem<N, BitsCarrier<B>>;
+type NicheFactory = SizedNicheFactory & { bits: BitsNicheFactory };
+
+const nicheFactory = (reserved: boolean): NicheFactory => {
+  const sized: SizedNicheFactory = (niches, ...[carrierOrOpts]) => {
+    type O = NonNullable<typeof carrierOrOpts>;
+    const { carrier } = sizedCarrier<O, Carrier>(carrierOrOpts);
+    return niched(carrier, niches, reserved);
+  };
+  const bits: BitsNicheFactory = (niches, bits) =>
+    niched({ binary: "uint", bits }, niches, reserved);
+  return Object.assign(sized, { bits });
+};
+
+export const nicheItem = nicheFactory(true);
+export const aliasItem = nicheFactory(false);
 
 // ---- option ----
 
-//the tag's slot is a carrier slot without its item forms, so SizedCarrier resolves to SlotUint
 type TagOpts = NotAnItem & SlotUintOpts<NumberSize>;
 
 //spelled out rather than inferred, so it prints by name - see DeclarationEmit.md
@@ -608,14 +675,13 @@ type ConvertedOption<T extends CustomizableBytes, A extends Struct, I extends Id
 
 type DefaultOptionOpts = TagOpts & PermissiveOpts;
 
-//permissive, any bytes of the default's size are read and discarded, and the default written;
-//  strict, the body must be the default's encoding
+//if permissive, any bytes of the default's size are read and discarded, and the default written;
+//  if strict, the body must be the default's encoding
 type AbsentItem<P extends boolean | undefined> = BytesBase & Readonly<
   P extends true
   ? { size: number, custom: Conversion<RoUint8Array, undefined> }
   : { fixed: RoUint8Array }
 >;
-//a permissive that may be either yields either body
 type AbsentBody<P extends boolean | undefined> =
   P extends unknown ? { readonly value: AbsentItem<P> } : never;
 
@@ -656,7 +722,7 @@ export const optionItem = <
   const T extends CustomizableBytes,
   const O extends NumberSize | TagOpts = {},
 >(someValue: T, ...[tagSizeOrOpts]: OptionalArg<O>): OptionItem<T, O> =>
-  convertedOption(someValue, {}, sizedCarrier(tagSizeOrOpts).carrier as SlotUint<O>);
+  convertedOption(someValue, {}, sizedCarrier<O, never>(tagSizeOrOpts).carrier as SlotUint<O>);
 
 export const defaultOptionItem = <
   const T extends CustomizableBytes,
@@ -667,7 +733,7 @@ export const defaultOptionItem = <
   ...[tagSizeOrOpts]: OptionalArg<O>
 ): DefaultOptionItem<T, O> => {
   const fixed = serialize(customizableBytes({}, someValue) as Layout, defaultValue as any);
-  const { carrier: tag, permissive } = sizedCarrier(tagSizeOrOpts);
+  const { carrier: tag, permissive } = sizedCarrier<O, never>(tagSizeOrOpts);
   const value: AbsentItem<boolean> =
     permissive
     ? { binary: "bytes", size: fixed.length, custom: { to: () => undefined, from: () => fixed } }

@@ -561,6 +561,8 @@ assertDistinct(1, 2, 3);            // ok
 assertDistinct(1, 2, 2);            // throws "Values are not distinct: 1, 2, 2"
 ```
 
+`assertDistinct` compares by `valueEquals`: a `Set`'s equality (SameValueZero), except that byte arrays are values and compare by content.
+
 ## Limits
 
 Const maps take up to 4 key columns (see [Const Maps](#const-maps)), and are meant for tables of bounded size. The default shape takes the spec as it is and handles thousands of rows, but an explicit shape regroups the rows at the type level, and that exhausts the instantiation budget (below) much sooner: a plain two-column inversion compiles at 600 rows and fails at 700 (TS 7.0, otherwise empty program), with more columns or duplicate-heavy data lowering the ceiling further. A table that grows with its domain – every token on every chain – belongs in a runtime `Map`.

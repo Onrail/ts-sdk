@@ -36,7 +36,7 @@ const client = createSolanaRpc("https://api.mainnet-beta.solana.com");
 // Basic account info (lamports as bigint by default)
 const account = await getAccountInfo(client, address);
 
-// With Amount kind - lamports become Amount<Sol>
+// With Amount kind - lamports become Amount<SolKind>
 const accountTyped = await getAccountInfo(client, address, Sol);
 accountTyped?.lamports.in("SOL");  // Rational
 
@@ -46,7 +46,7 @@ accountTyped?.lamports.in("SOL");  // Rational
 const accounts = await getAccountInfo(client, [addr1, addr2, addr3]);
 
 // Balances
-const balance = await getBalance(client, address, Sol);  // Amount<Sol> | undefined
+const balance = await getBalance(client, address, Sol);  // Amount<SolKind> | undefined
 
 // SPL Token accounts - checks for program ownership (getDeserializedAccount is unchecked)
 const mint = await getMint(client, mintAddress);
@@ -65,7 +65,7 @@ The rest follow suit: `getTokenBalance` reads a token account's amount alone, `g
 
 ```typescript
 const svm = bindClient(client, Sol);
-await svm.getBalance(address);  // Amount<Sol> | undefined
+await svm.getBalance(address);  // Amount<SolKind> | undefined
 
 const getTypedTokenAccount = svm.getTokenAccount(MyTokenKind);
 await getTypedTokenAccount(ataAddress);
@@ -142,7 +142,7 @@ The first argument is a `DiscriminatorType`, and every discriminator is `discrim
 
 ```typescript
 const lamports = minimumBalanceForRentExemption(165);  // Lamports (bigint)
-const amount = minimumBalanceForRentExemption(165, Sol);  // Amount<Sol>
+const amount = minimumBalanceForRentExemption(165, Sol);  // Amount<SolKind>
 ```
 
 A local formula over the standard rent parameters, unchanged since genesis: 3480 lamports per byte-year, exemption at two years' rent, 128 bytes of per-account overhead. A cluster configured otherwise wants the RPC's `getMinimumBalanceForRentExemption`.

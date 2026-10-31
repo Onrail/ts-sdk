@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { assertDistinct, assertEqual } from "../src/assertions.js";
+import { assertDistinct, assertEqual, valueEquals } from "../src/assertions.js";
 
 describe("assertDistinct", () => {
   it("should throw an error if values are NOT distinct", () => {
@@ -10,6 +10,14 @@ describe("assertDistinct", () => {
   it("should NOT throw an error if values are distinct (references)", () => {
     assert.doesNotThrow(() => assertDistinct({}, {}, {}));
     assert.strictEqual(assertDistinct(1, 2, 3), undefined);
+  });
+
+  it("compares bytes by content", () => {
+    assert.equal(valueEquals(new Uint8Array([1, 2]), new Uint8Array([1, 2])), true);
+    assert.equal(valueEquals(new Uint8Array([1, 2]), [1, 2]), false);
+    assert.throws(() => assertDistinct(new Uint8Array([1, 2]), new Uint8Array([1, 2])));
+    assert.doesNotThrow(() => assertDistinct(new Uint8Array([1, 2]), new Uint8Array([1])));
+    assert.throws(() => assertDistinct(NaN, NaN));
   });
 
   it("should report symbols instead of failing to stringify them", () => {

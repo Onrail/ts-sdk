@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@onrail-xyz/fork-svm",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": "nonergodic",
   "license": "Apache-2.0",
   "description": "Solana fork testing utility based on LiteSVM",
@@ -44,11 +44,11 @@
     "clean": "rm -rf ./dist"
   },
   "peerDependencies": {
-    "@onrail-xyz/utils": "^2.0.0",
-    "@onrail-xyz/binary-layout": "^2.0.0",
-    "@onrail-xyz/amount": "^2.0.0",
-    "@onrail-xyz/common": "^2.0.0",
-    "@onrail-xyz/svm": "^2.0.0",
+    "@onrail-xyz/utils": "^2.1.0",
+    "@onrail-xyz/binary-layout": "^2.1.0",
+    "@onrail-xyz/amount": "^2.1.0",
+    "@onrail-xyz/common": "^2.1.0",
+    "@onrail-xyz/svm": "^2.1.0",
     "@solana/kit": "^7",
     "@solana/rpc-spec": "^7"
   },
